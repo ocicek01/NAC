@@ -1,0 +1,7 @@
+ALTER TABLE devices
+    ADD COLUMN IF NOT EXISTS current_switch_name TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS current_management_ip TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS current_bridge_port INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS current_if_index INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS current_interface_name TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS current_interface_description TEXT NOT NULL DEFAULT '';

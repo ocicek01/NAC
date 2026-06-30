@@ -1,0 +1,2 @@
+switch_ipaddr;port;routing_ipaddr;location_name;user_groups;device_discovery;auto_config;snmp_type;snmpv1_community;snmpv2c_write;snmpv3_user;snmpv3_type;snmpv3_authtype;snmpv3_authkey;snmpv3_privtype;snmpv3_privkey;ip_phone_usage
+192.168.1.1;161;192.168.1.254;Genel;Genel;y;n;3;;;snmp_user;authPriv;MD5;snmp_authkey;DES;snmp_privkey;n

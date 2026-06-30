@@ -1,0 +1,2 @@
+ALTER TABLE switches
+    ADD COLUMN IF NOT EXISTS radius_secret TEXT NOT NULL DEFAULT '';

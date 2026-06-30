@@ -1,0 +1,12 @@
+.env
+bin/
+vendor/
+coverage.out
+tmp/
+storage/
+panel-app/.env
+panel-app/vendor/
+panel-app/node_modules/
+panel-app/storage/
+panel-app/bootstrap/cache/*.php
+panel-app/.phpunit.result.cache

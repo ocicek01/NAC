@@ -1,0 +1,24 @@
+services:
+  postgres:
+    image: postgres:17
+    container_name: nac-postgres
+    environment:
+      POSTGRES_DB: nac_platform
+      POSTGRES_USER: nac
+      POSTGRES_PASSWORD: nac
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    container_name: nac-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+volumes:
+  postgres_data:
+  redis_data:
