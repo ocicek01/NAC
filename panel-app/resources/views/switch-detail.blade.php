@@ -339,8 +339,13 @@
         .port-tile.state-guest { background:#facc15; }
         .port-tile.state-empty { background:#b8c3d3; }
         .port-tile.state-disabled { background:#677489; }
-        .port-tile.is-uplink-role { border-color:#18b7c9; box-shadow:0 0 0 1px rgba(24,183,201,.45), inset 0 0 0 1px rgba(255,255,255,.1); }
-        .port-tile.is-uplink-role::after { content:""; position:absolute; inset:2px; border-radius:2px; border:1px dashed rgba(6,31,36,.28); pointer-events:none; }
+        .port-tile.is-uplink-role {
+            background:linear-gradient(180deg, #58e3f0 0%, #19bfd3 100%);
+            color:#062c33;
+            border-color:#8af3ff;
+            box-shadow:0 0 0 2px rgba(24,183,201,.7), 0 8px 18px rgba(24,183,201,.28), inset 0 0 0 1px rgba(255,255,255,.38);
+        }
+        .port-tile.is-uplink-role::after { content:""; position:absolute; inset:2px; border-radius:2px; border:1px solid rgba(6,31,36,.35); pointer-events:none; }
         .port-tile.is-selected { outline:2px solid #fff; box-shadow:0 0 0 2px #2f6fec; }
         .uplink-block { display:grid; gap:8px; }
         .uplink-title { font-size:.72rem; letter-spacing:.08em; text-transform:uppercase; color:#d8dde7; text-align:center; }
@@ -354,7 +359,12 @@
         .uplink-port.state-guest { background:#facc15; }
         .uplink-port.state-empty { background:#b8c3d3; color:#13233d; }
         .uplink-port.state-disabled { background:#677489; }
-        .uplink-port.is-uplink-role { border-color:#18b7c9; box-shadow:0 0 0 1px rgba(24,183,201,.45), inset 0 0 0 1px rgba(255,255,255,.08); }
+        .uplink-port.is-uplink-role {
+            background:linear-gradient(180deg, #58e3f0 0%, #19bfd3 100%);
+            color:#062c33;
+            border-color:#8af3ff;
+            box-shadow:0 0 0 2px rgba(24,183,201,.7), 0 8px 18px rgba(24,183,201,.28), inset 0 0 0 1px rgba(255,255,255,.32);
+        }
         .uplink-port.is-selected { outline:2px solid #fff; box-shadow:0 0 0 2px #2f6fec; }
         .panel-legend { display:flex; flex-wrap:wrap; gap:18px; padding:12px 0 0; align-items:center; font-size:.88rem; color:#55647a; }
         .panel-legend .dot { width:12px; height:12px; border-radius:999px; display:inline-block; margin-right:8px; }
@@ -1671,3 +1681,4 @@
     </script>
 </body>
 </html>
+
