@@ -125,7 +125,9 @@ type Client interface {
 	LookupMAC(ctx context.Context, target SwitchTarget, macAddress string) (LookupResult, error)
 	GetSystemName(ctx context.Context, target SwitchTarget) (string, error)
 	GetBaseMAC(ctx context.Context, target SwitchTarget) (string, error)
+	GetInt(ctx context.Context, target SwitchTarget, oid string) (int, error)
 	ResolveBridgePort(ctx context.Context, target SwitchTarget, bridgePort int) (LookupResult, error)
+	FindBridgePortByIfIndex(ctx context.Context, target SwitchTarget, ifIndex int) (int, error)
 	DiscoverLLDPNeighbors(ctx context.Context, target SwitchTarget) ([]LLDPNeighbor, error)
 	DiscoverCDPNeighbors(ctx context.Context, target SwitchTarget) ([]CDPNeighbor, error)
 	DiscoverTrunkPorts(ctx context.Context, target SwitchTarget) ([]TrunkPort, error)
@@ -188,6 +190,15 @@ func (c *GoSNMPClient) GetSystemName(ctx context.Context, target SwitchTarget) (
 	return getString(ctx, params, oidSysName)
 }
 
+func (c *GoSNMPClient) GetInt(ctx context.Context, target SwitchTarget, oid string) (int, error) {
+	params, err := c.connect(target)
+	if err != nil {
+		return 0, err
+	}
+	defer params.Conn.Close()
+
+	return getInt(ctx, params, oid)
+}
 func (c *GoSNMPClient) GetBaseMAC(ctx context.Context, target SwitchTarget) (string, error) {
 	params, err := c.connect(target)
 	if err != nil {
@@ -198,6 +209,30 @@ func (c *GoSNMPClient) GetBaseMAC(ctx context.Context, target SwitchTarget) (str
 	return getMAC(ctx, params, oidDot1dBaseAddr)
 }
 
+func (c *GoSNMPClient) FindBridgePortByIfIndex(ctx context.Context, target SwitchTarget, ifIndex int) (int, error) {
+	params, err := c.connect(target)
+	if err != nil {
+		return 0, err
+	}
+	defer params.Conn.Close()
+
+	mapping, err := walkIntMap(ctx, params, oidDot1dBasePortIfIx)
+	if err != nil {
+		return 0, err
+	}
+
+	for suffix, mappedIfIndex := range mapping {
+		if mappedIfIndex != ifIndex {
+			continue
+		}
+		bridgePort, ok := parsePositiveInt(suffix)
+		if ok {
+			return bridgePort, nil
+		}
+	}
+
+	return 0, fmt.Errorf("bridge port not found for if_index %d", ifIndex)
+}
 func (c *GoSNMPClient) ResolveBridgePort(ctx context.Context, target SwitchTarget, bridgePort int) (LookupResult, error) {
 	params, err := c.connect(target)
 	if err != nil {

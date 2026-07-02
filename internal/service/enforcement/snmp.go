@@ -77,8 +77,12 @@ func (s *Service) ExecuteSNMPPortBounce(ctx context.Context, switchID string, if
 	return s.snmp.ExecutePortBounce(ctx, *asset, ifIndex, interfaceName)
 }
 
-func (e *snmpEnforcer) PreviewPortVLAN(_ context.Context, asset switchasset.Switch, bridgePort, ifIndex int, interfaceName string, vlanID int, skipPortBounce bool) (domain.VLANPlan, error) {
-	plan, _, err := buildSNMPPlan(asset, bridgePort, ifIndex, interfaceName, vlanID, skipPortBounce)
+func (e *snmpEnforcer) PreviewPortVLAN(ctx context.Context, asset switchasset.Switch, bridgePort, ifIndex int, interfaceName string, vlanID int, skipPortBounce bool) (domain.VLANPlan, error) {
+	resolvedBridgePort, err := e.resolveBridgePort(ctx, asset, bridgePort, ifIndex)
+	if err != nil {
+		return domain.VLANPlan{}, err
+	}
+	plan, _, err := buildSNMPPlan(asset, resolvedBridgePort, ifIndex, interfaceName, vlanID, skipPortBounce)
 	return plan, err
 }
 
@@ -88,7 +92,12 @@ func (e *snmpEnforcer) PreviewPortBounce(_ context.Context, asset switchasset.Sw
 }
 
 func (e *snmpEnforcer) ExecutePortVLAN(ctx context.Context, asset switchasset.Switch, bridgePort, ifIndex int, interfaceName string, vlanID int, skipPortBounce bool) (domain.VLANExecutionResult, error) {
-	plan, target, err := buildSNMPPlan(asset, bridgePort, ifIndex, interfaceName, vlanID, skipPortBounce)
+	resolvedBridgePort, err := e.resolveBridgePort(ctx, asset, bridgePort, ifIndex)
+	if err != nil {
+		return domain.VLANExecutionResult{}, err
+	}
+
+	plan, target, err := buildSNMPPlan(asset, resolvedBridgePort, ifIndex, interfaceName, vlanID, skipPortBounce)
 	if err != nil {
 		return domain.VLANExecutionResult{}, err
 	}
@@ -158,6 +167,38 @@ func (e *snmpEnforcer) ExecutePortBounce(ctx context.Context, asset switchasset.
 		Executed: true,
 		Output:   "snmp port bounce executed",
 	}, nil
+}
+
+func (e *snmpEnforcer) resolveBridgePort(ctx context.Context, asset switchasset.Switch, bridgePort, ifIndex int) (int, error) {
+	profile := selectSNMPProfile(asset)
+	if profile.vlanIndexMode != "bridgeport" {
+		return bridgePort, nil
+	}
+	if bridgePort > 0 {
+		return bridgePort, nil
+	}
+	if ifIndex <= 0 {
+		return 0, fmt.Errorf("if_index is not available for bridge port lookup")
+	}
+	if e.client == nil {
+		return 0, fmt.Errorf("snmp client is not configured")
+	}
+	resolvedBridgePort, err := e.client.FindBridgePortByIfIndex(ctx, snmp.SwitchTarget{
+		Address:   asset.ManagementIP,
+		Port:      uint16(asset.SNMPPort),
+		Community: asset.SNMPCommunity,
+		Timeout:   time.Duration(asset.SNMPTimeoutMS) * time.Millisecond,
+		Retries:   asset.SNMPRetries,
+		Vendor:    asset.Vendor,
+		Model:     asset.Model,
+	}, ifIndex)
+	if err != nil {
+		if profile.allowIfIndexFallback {
+			return ifIndex, nil
+		}
+		return 0, err
+	}
+	return resolvedBridgePort, nil
 }
 
 type snmpAction struct {
