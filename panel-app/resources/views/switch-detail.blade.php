@@ -1048,9 +1048,15 @@
                 body: JSON.stringify(Object.assign({ action: action }, extraPayload || {}))
             });
 
-            const payload = await response.json().catch(function () {
-                return {};
-            });
+            const rawText = await response.text();
+            let payload = {};
+            if (rawText) {
+                try {
+                    payload = JSON.parse(rawText);
+                } catch (error) {
+                    payload = { message: rawText.trim() };
+                }
+            }
 
             if (!response.ok) {
                 const validationMessage = payload.errors?.action?.[0];

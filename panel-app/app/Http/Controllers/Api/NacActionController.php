@@ -8,6 +8,8 @@ use App\Services\AuditLogService;
 use App\Services\PortActionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\ValidationException;
+use Throwable;
 
 class NacActionController extends Controller
 {
@@ -19,12 +21,25 @@ class NacActionController extends Controller
 
     public function store(Request $request, SwitchPort $port): JsonResponse
     {
-        $result = $this->portActionService->execute(
-            $port,
-            $request->all(),
-            $this->auditLogService->contextFromRequest($request)
-        );
+        try {
+            $result = $this->portActionService->execute(
+                $port,
+                $request->all(),
+                $this->auditLogService->contextFromRequest($request)
+            );
 
-        return response()->json($result);
+            return response()->json($result);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'message' => $e->getMessage(),
+                'errors' => $e->errors(),
+            ], 422);
+        } catch (Throwable $e) {
+            report($e);
+
+            return response()->json([
+                'message' => $e->getMessage() !== '' ? $e->getMessage() : 'Port aksiyonu uygulanamadi.',
+            ], 500);
+        }
     }
 }
