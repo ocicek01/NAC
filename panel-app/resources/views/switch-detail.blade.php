@@ -1114,10 +1114,11 @@
             try {
                 const result = await executePortAction(action, payload);
                 const vlanId = result.execution?.vlan_id || payload.vlan_id || '-';
+                applyPortVlanChange(selectedContextPort.id, vlanId);
                 showDiscoveryToast('VLAN degisti', selectedContextPort.label + ' icin VLAN ' + vlanId + ' uygulandi.');
                 window.setTimeout(function () {
-                    reloadAfterDiscovery(selectedContextPort.id);
-                }, 700);
+                    refreshPortDetail(selectedContextPort.id).catch(function () {});
+                }, 400);
             } catch (error) {
                 window.alert(error.message || 'Port VLAN degisikligi uygulanamadi.');
             }
@@ -1139,10 +1140,11 @@
                 const appliedVlan = result.execution?.vlan_id || vlanId;
                 vlanSelectModal.hide();
                 pendingVlanAction = null;
+                applyPortVlanChange(selectedContextPort.id, appliedVlan);
                 showDiscoveryToast('VLAN degisti', selectedContextPort.label + ' icin VLAN ' + appliedVlan + ' uygulandi.');
                 window.setTimeout(function () {
-                    reloadAfterDiscovery(selectedContextPort.id);
-                }, 700);
+                    refreshPortDetail(selectedContextPort.id).catch(function () {});
+                }, 400);
             } catch (error) {
                 window.alert(error.message || 'Port VLAN degisikligi uygulanamadi.');
             }
@@ -1302,6 +1304,51 @@
             setDiscoveryBackgroundEnabled(false);
             activeDiscoveryJob = null;
             throw new Error('Discovery zaman asimina ugradi.');
+        }
+
+        function mergePortData(portId, patch) {
+            const key = String(portId);
+            if (!portMap[key]) {
+                return;
+            }
+            portMap[key] = Object.assign({}, portMap[key], patch || {});
+        }
+
+        function applyPortVlanChange(portId, vlanId) {
+            const normalizedVlan = String(vlanId);
+            mergePortData(portId, {
+                vlan: normalizedVlan,
+                vlanLabel: normalizedVlan,
+            });
+            if (String(currentSelectedPortId) === String(portId)) {
+                updateSelectedPort(portId);
+            }
+            if (selectedContextPort && String(selectedContextPort.id) === String(portId)) {
+                selectedContextPort = portMap[String(portId)];
+            }
+        }
+
+        async function refreshPortDetail(portId) {
+            const response = await fetch('/api/switch-ports/' + encodeURIComponent(String(portId)), {
+                headers: {
+                    'Accept': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
+            });
+
+            if (!response.ok) {
+                throw new Error('Port detay bilgisi alinamadi.');
+            }
+
+            const payload = await response.json();
+            const data = payload.data || {};
+            mergePortData(portId, data);
+            if (String(currentSelectedPortId) === String(portId)) {
+                updateSelectedPort(portId);
+            }
+            if (selectedContextPort && String(selectedContextPort.id) === String(portId)) {
+                selectedContextPort = portMap[String(portId)];
+            }
         }
 
         function syncSelectedPortQuery(portId) {
@@ -1690,4 +1737,5 @@
     </script>
 </body>
 </html>
+
 
