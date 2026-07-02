@@ -1,7 +1,9 @@
 <?php
 
+use App\Http\Controllers\Api\NacActionController;
 use App\Http\Controllers\Web\DevicePageController;
 use App\Http\Controllers\Web\SwitchPageController;
+use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', [SwitchPageController::class, 'index']);
@@ -11,6 +13,9 @@ Route::post('/devices/{mac}/approve', [DevicePageController::class, 'approve'])-
 Route::post('/devices/{mac}/guest', [DevicePageController::class, 'guest'])->name('devices.guest');
 Route::post('/devices/{mac}/block', [DevicePageController::class, 'block'])->name('devices.block');
 Route::post('/devices/{mac}/retire', [DevicePageController::class, 'retire'])->name('devices.retire');
+Route::post('/switch-ports/{port}/actions', [NacActionController::class, 'store'])
+    ->withoutMiddleware([VerifyCsrfToken::class])
+    ->name('switch-ports.actions');
 Route::get('/switches/create', [SwitchPageController::class, 'create'])->name('switches.create');
 Route::post('/switches', [SwitchPageController::class, 'store'])->name('switches.store');
 Route::get('/switches/{zone:slug}', [SwitchPageController::class, 'zone'])->name('switches.zone');

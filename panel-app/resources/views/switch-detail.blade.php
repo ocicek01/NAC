@@ -950,6 +950,8 @@
         const guestVlan = @json($guestVlan);
         const quarantineVlan = @json($quarantineVlan);
         const availableVlans = @json($availableVlans);
+        const csrfToken = @json(csrf_token());
+        const switchPortActionUrlTemplate = @json(url('/switch-ports/__PORT__/actions'));
         const portAllowForm = document.getElementById('port-allow-form');
         const portGuestForm = document.getElementById('port-guest-form');
         const portBlockForm = document.getElementById('port-block-form');
@@ -1038,12 +1040,13 @@
                 return;
             }
 
-            const response = await fetch('/api/switch-ports/' + selectedContextPort.id + '/actions', {
+            const response = await fetch(switchPortActionUrlTemplate.replace('__PORT__', encodeURIComponent(String(selectedContextPort.id))), {
                 method: 'POST',
                 headers: {
                     'Accept': 'application/json',
                     'Content-Type': 'application/json',
-                    'X-Requested-With': 'XMLHttpRequest'
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'X-CSRF-TOKEN': csrfToken
                 },
                 body: JSON.stringify(Object.assign({ action: action }, extraPayload || {}))
             });
@@ -1687,5 +1690,4 @@
     </script>
 </body>
 </html>
-
 
