@@ -104,26 +104,30 @@ class PortActionService
         }
 
         $vlanID = $this->resolveTargetVLAN($validated);
+        $method = $this->preferredExecutionMethod($resolvedSwitch);
+        if ($method === null) {
+            throw ValidationException::withMessages([
+                'action' => 'Bu switch icin executable VLAN enforcement method bulunamadi.',
+            ]);
+        }
+
         $requestPayload = [
-            'switch_id' => (string) $resolvedSwitch['id'],
+            'switch_id' => (string) ($resolvedSwitch['id'] ?? ''),
             'bridge_port' => 0,
             'if_index' => (int) ($port->if_index ?? 0),
             'interface_name' => (string) ($port->port_name ?? ''),
             'vlan_id' => $vlanID,
+            'selected_method' => $method,
             'skip_port_bounce' => false,
         ];
 
         try {
-            if ((bool) ($resolvedSwitch['supports_snmp_write'] ?? false)) {
+            if ($method === 'snmp-write') {
                 $result = $this->nacApiClient->executeSNMPPortVLAN($requestPayload);
                 $driver = 'snmp-write';
-            } elseif ((bool) ($resolvedSwitch['supports_ssh_enforcement'] ?? false)) {
+            } else {
                 $result = $this->nacApiClient->executeSSHPortVLAN($requestPayload);
                 $driver = 'ssh';
-            } else {
-                throw ValidationException::withMessages([
-                    'action' => 'Bu switch icin executable VLAN enforcement method bulunamadi.',
-                ]);
             }
         } catch (RuntimeException $e) {
             throw ValidationException::withMessages([
@@ -146,6 +150,37 @@ class PortActionService
         ];
     }
 
+    protected function preferredExecutionMethod(array $resolvedSwitch): ?string
+    {
+        $supportsSNMP = (bool) ($resolvedSwitch['supports_snmp_write'] ?? false);
+        $supportsSSH = (bool) ($resolvedSwitch['supports_ssh_enforcement'] ?? false);
+
+        if (! $supportsSNMP && ! $supportsSSH) {
+            return null;
+        }
+
+        $vendor = strtolower(trim((string) ($resolvedSwitch['vendor'] ?? '')));
+        $model = strtolower(trim((string) ($resolvedSwitch['model'] ?? '')));
+        $name = strtolower(trim((string) ($resolvedSwitch['name'] ?? '')));
+
+        $snmpPreferredVendors = ['hp', 'hpe', 'aruba', 'arubaos'];
+        foreach ($snmpPreferredVendors as $needle) {
+            if (str_contains($vendor, $needle) || str_contains($model, $needle) || str_contains($name, $needle)) {
+                return $supportsSNMP ? 'snmp-write' : ($supportsSSH ? 'ssh' : null);
+            }
+        }
+
+        if ($supportsSNMP) {
+            return 'snmp-write';
+        }
+
+        if ($supportsSSH) {
+            return 'ssh';
+        }
+
+        return null;
+    }
+
     protected function resolveTargetVLAN(array $validated): int
     {
         return match ($validated['action']) {
@@ -155,4 +190,3 @@ class PortActionService
         };
     }
 }
-
