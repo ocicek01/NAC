@@ -1723,6 +1723,7 @@
         document.querySelectorAll('.port-tile, .uplink-port').forEach(function (tile) {
             tile.addEventListener('click', function () {
                 updateSelectedPort(tile.dataset.portId);
+                refreshPortDetail(tile.dataset.portId).catch(function () {});
                 hideContextMenu();
             });
 
@@ -1869,6 +1870,7 @@
         applySelectedPortFromQuery();
         if (portMap[String(currentSelectedPortId)]) {
             syncPortActionForms(portMap[String(currentSelectedPortId)]);
+            refreshPortDetail(currentSelectedPortId).catch(function () {});
         }
         loadPortStatuses().catch(function (error) {
             console.error(error);
@@ -1879,6 +1881,3 @@
     </script>
 </body>
 </html>
-
-
-
