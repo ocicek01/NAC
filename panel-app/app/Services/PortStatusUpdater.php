@@ -4,7 +4,6 @@ namespace App\Services;
 
 use App\Models\NetworkSwitch;
 use App\Models\SwitchPort;
-use Illuminate\Support\Arr;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -30,11 +29,18 @@ class PortStatusUpdater
         ?Carbon $seenAt = null,
     ): SwitchPort {
         $seenAt ??= now();
+        $portName = $ifName ?: (string) $ifIndex;
+        $portDescription = $ifDescr;
+        $computedPortIndex = $this->extractPortIndex($portName, $portDescription ?: '', $ifIndex);
 
-        $port = SwitchPort::query()->firstOrNew([
-            'switch_id' => $switch->id,
-            'if_index' => $ifIndex,
-        ]);
+        $port = SwitchPort::query()->where('switch_id', $switch->id)
+            ->where(function ($query) use ($ifIndex, $portName, $computedPortIndex) {
+                $query->where('if_index', $ifIndex)
+                    ->orWhere('port_name', $portName)
+                    ->orWhere('port_index', $computedPortIndex);
+            })
+            ->orderByRaw('case when if_index = ? then 0 when port_name = ? then 1 when port_index = ? then 2 else 3 end', [$ifIndex, $portName, $computedPortIndex])
+            ->first() ?? new SwitchPort();
 
         $previousAdmin = (string) ($port->admin_status ?? 'unknown');
         $previousOper = (string) ($port->oper_status ?? 'unknown');
@@ -47,7 +53,7 @@ class PortStatusUpdater
 
         $portName = $ifName ?: $port->port_name ?: (string) $ifIndex;
         $portDescription = $ifDescr ?: $port->port_description;
-        $portIndex = $port->port_index ?: $this->portIndexFromName($portName, $ifIndex);
+        $portIndex = $port->port_index ?: $computedPortIndex;
 
         $port->fill([
             'switch_id' => $switch->id,
@@ -134,13 +140,67 @@ class PortStatusUpdater
         return 'down';
     }
 
-    protected function portIndexFromName(string $portName, int $fallback): int
+    protected function extractPortIndex(string $name, string $descr, int $fallback): int
     {
-        if (preg_match('/(\d+)\s*$/', $portName, $matches) === 1) {
-            return (int) $matches[1];
+        $nameSegments = $this->extractNumericSegments($name);
+        if ($nameSegments !== []) {
+            return $this->buildPortIndex($name, $nameSegments, $fallback);
+        }
+
+        $descrSegments = $this->extractNumericSegments($descr);
+        if ($descrSegments !== []) {
+            return $this->buildPortIndex($descr, $descrSegments, $fallback);
         }
 
         return $fallback;
+    }
+
+    protected function extractNumericSegments(string $value): array
+    {
+        if (! preg_match_all('/\d+/', $value, $matches)) {
+            return [];
+        }
+
+        return array_map('intval', $matches[0]);
+    }
+
+    protected function buildPortIndex(string $source, array $segments, int $fallback): int
+    {
+        $prefix = $this->portPrefixNamespace($source);
+
+        if (count($segments) === 1) {
+            return $prefix > 0
+                ? ($prefix * 100000) + $segments[0]
+                : $segments[0];
+        }
+
+        $portIndex = $prefix > 0 ? $prefix : 0;
+
+        foreach ($segments as $segment) {
+            if ($segment > 99) {
+                return $fallback;
+            }
+
+            $portIndex = ($portIndex * 100) + $segment;
+        }
+
+        return $portIndex > 0 ? $portIndex : $fallback;
+    }
+
+    protected function portPrefixNamespace(string $value): int
+    {
+        $normalized = strtolower(trim($value));
+
+        return match (true) {
+            preg_match('/^(fa|fastethernet)/i', $normalized) === 1 => 1,
+            preg_match('/^(gi|gigabitethernet|ge)/i', $normalized) === 1 => 2,
+            preg_match('/^(te|tengigabitethernet|ten-gigabitethernet|xge)/i', $normalized) === 1 => 3,
+            preg_match('/^(fo)/i', $normalized) === 1 => 4,
+            preg_match('/^(tw)/i', $normalized) === 1 => 5,
+            preg_match('/^(hu)/i', $normalized) === 1 => 6,
+            preg_match('/^(eth|ethernet)/i', $normalized) === 1 => 7,
+            default => 0,
+        };
     }
 
     protected function pushEvent(array $event): void

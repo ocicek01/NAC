@@ -4,6 +4,7 @@ namespace Tests\Unit;
 
 use App\Models\NacAuditLog;
 use App\Models\NetworkSwitch;
+use App\Models\SwitchPort;
 use App\Models\Zone;
 use App\Services\PortStatusUpdater;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -19,29 +20,7 @@ class PortStatusUpdaterTest extends TestCase
         config(['cache.default' => 'array']);
         Cache::flush();
 
-        $zone = Zone::query()->create([
-            'name' => 'Core',
-            'slug' => 'core',
-            'status' => 'normal',
-        ]);
-
-        $switch = NetworkSwitch::query()->create([
-            'zone_id' => $zone->id,
-            'hostname' => 'SW-CORE-01',
-            'ip_address' => '10.0.0.1',
-            'vendor' => 'Cisco',
-            'model' => 'C9300-48P',
-            'status' => 'online',
-            'managed' => true,
-            'nac_mode' => 'monitor',
-            'port_count' => 48,
-            'snmp_version' => '2c',
-            'snmp_community' => 'public',
-            'snmp_port' => 161,
-            'snmp_timeout_ms' => 2000,
-            'snmp_retries' => 1,
-        ]);
-
+        $switch = $this->makeSwitch();
         $service = $this->app->make(PortStatusUpdater::class);
 
         $service->updatePortStatus($switch, 45, 'Gi1/0/45', 'Port 45', 'up', 'down', '1 Gbps', 'snmp_poll');
@@ -60,5 +39,55 @@ class PortStatusUpdaterTest extends TestCase
         $this->assertSame('port_status_changed', $events[0]['type']);
         $this->assertSame('down', $events[0]['old_oper_status']);
         $this->assertSame('up', $events[0]['new_oper_status']);
+    }
+
+    public function test_it_generates_unique_port_index_for_fo_interfaces(): void
+    {
+        $switch = $this->makeSwitch();
+        $service = $this->app->make(PortStatusUpdater::class);
+
+        SwitchPort::query()->create([
+            'switch_id' => $switch->id,
+            'if_index' => 1,
+            'port_index' => 1,
+            'port_name' => 'Gi1/0/1',
+            'status' => 'down',
+        ]);
+
+        $updated = $service->updatePortStatus($switch, 69, 'Fo1/1/1', 'FortyGigabitEthernet1/1/1', 'up', 'down', '40 Gbps', 'snmp_poll');
+
+        $this->assertSame(4010101, $updated->port_index);
+        $this->assertDatabaseHas('switch_ports', [
+            'switch_id' => $switch->id,
+            'if_index' => 69,
+            'port_index' => 4010101,
+            'port_name' => 'Fo1/1/1',
+        ]);
+    }
+
+    private function makeSwitch(): NetworkSwitch
+    {
+        $zone = Zone::query()->create([
+            'name' => 'Core',
+            'slug' => 'core',
+            'status' => 'normal',
+        ]);
+
+        return NetworkSwitch::query()->create([
+            'zone_id' => $zone->id,
+            'hostname' => 'SW-CORE-01',
+            'ip_address' => '10.0.0.1',
+            'vendor' => 'Cisco',
+            'model' => 'C9300-48P',
+            'status' => 'online',
+            'managed' => true,
+            'nac_mode' => 'monitor',
+            'port_count' => 48,
+            'snmp_version' => '2c',
+            'snmp_community' => 'public',
+            'snmp_port' => 161,
+            'snmp_timeout_ms' => 2000,
+            'snmp_retries' => 1,
+        ]);
     }
 }
