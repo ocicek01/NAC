@@ -29,6 +29,9 @@ class NetworkSwitch extends Model
         'snmp_port',
         'snmp_timeout_ms',
         'snmp_retries',
+        'last_polled_at',
+        'consecutive_polling_failures',
+        'polling_error',
         'last_seen_at',
     ];
 
@@ -37,6 +40,8 @@ class NetworkSwitch extends Model
         'snmp_port' => 'integer',
         'snmp_timeout_ms' => 'integer',
         'snmp_retries' => 'integer',
+        'last_polled_at' => 'datetime',
+        'consecutive_polling_failures' => 'integer',
         'last_seen_at' => 'datetime',
     ];
 
@@ -55,3 +60,4 @@ class NetworkSwitch extends Model
         return $this->hasMany(NacAuditLog::class, 'switch_id');
     }
 }
+

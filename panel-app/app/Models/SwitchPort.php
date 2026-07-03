@@ -15,6 +15,8 @@ class SwitchPort extends Model
     protected $fillable = [
         'switch_id',
         'if_index',
+        'if_name',
+        'if_descr',
         'port_index',
         'port_name',
         'port_description',
@@ -31,6 +33,10 @@ class SwitchPort extends Model
         'duplex',
         'poe_enabled',
         'poe_power',
+        'status_source',
+        'raw_status',
+        'last_seen',
+        'last_change',
         'last_change_at',
         'last_discovered_at',
     ];
@@ -43,6 +49,9 @@ class SwitchPort extends Model
         'allowed_vlans' => 'array',
         'poe_enabled' => 'boolean',
         'poe_power' => 'decimal:2',
+        'raw_status' => 'array',
+        'last_seen' => 'datetime',
+        'last_change' => 'datetime',
         'last_change_at' => 'datetime',
         'last_discovered_at' => 'datetime',
     ];
@@ -62,3 +71,4 @@ class SwitchPort extends Model
         return $this->hasOne(EndpointLocation::class, 'switch_port_id')->latestOfMany('last_seen_at');
     }
 }
+

@@ -1,7 +1,8 @@
 <?php
 
-use App\Http\Controllers\Api\NacActionController;
 use App\Http\Controllers\Api\DiscoveryJobController;
+use App\Http\Controllers\Api\NacActionController;
+use App\Http\Controllers\Api\PortStatusEventController;
 use App\Http\Controllers\Api\SwitchController;
 use App\Http\Controllers\Api\SwitchPortController;
 use App\Http\Controllers\Api\ZoneController;
@@ -17,6 +18,7 @@ Route::put('/switches/{switch}', [SwitchController::class, 'update']);
 Route::put('/switches/{switch}/nac-mode', [SwitchController::class, 'updateNacMode']);
 Route::post('/switches/{switch}/rediscover-ports', [SwitchController::class, 'rediscoverPorts']);
 Route::get('/switches/{switch}/ports', [SwitchController::class, 'ports']);
+Route::get('/switches/{switch}/ports/status', [SwitchController::class, 'portsStatus']);
 Route::get('/discovery-jobs/{job}', [DiscoveryJobController::class, 'show']);
 
 Route::get('/switch-ports/{port}', [SwitchPortController::class, 'show']);
@@ -24,3 +26,5 @@ Route::get('/switch-ports/{port}/lldp', [SwitchPortController::class, 'lldp']);
 Route::post('/switch-ports/{port}/rediscover', [SwitchPortController::class, 'rediscover']);
 Route::put('/switch-ports/{port}/nac-mode', [SwitchPortController::class, 'updateNacMode']);
 Route::post('/switch-ports/{port}/actions', [NacActionController::class, 'store']);
+
+Route::get('/events/ports', [PortStatusEventController::class, 'stream']);

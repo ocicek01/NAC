@@ -5,12 +5,12 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\NetworkSwitch;
 use App\Models\SwitchPort;
-use App\Models\Zone;
 use App\Services\AuditLogService;
 use App\Services\NacApiClient;
 use App\Services\SwitchStatsService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rule;
@@ -70,6 +70,8 @@ class SwitchController extends Controller
                     'poe_enabled' => false,
                     'poe_power' => 0,
                     'last_change_at' => now(),
+                    'last_change' => now(),
+                    'last_seen' => now(),
                 ]);
             }
 
@@ -167,6 +169,44 @@ class SwitchController extends Controller
 
         return response()->json([
             'data' => $switch->ports->map(fn (SwitchPort $port) => $this->switchStatsService->portDetail($port))->values(),
+        ]);
+    }
+
+    public function portsStatus(NetworkSwitch $switch): JsonResponse
+    {
+        $ports = $switch->ports()
+            ->orderBy('port_index')
+            ->orderBy('if_index')
+            ->get()
+            ->map(function (SwitchPort $port) {
+                return [
+                    'port_id' => $port->id,
+                    'port_no' => $port->port_index,
+                    'if_index' => $port->if_index,
+                    'if_name' => $port->if_name ?: $port->port_name,
+                    'if_descr' => $port->if_descr ?: $port->port_description,
+                    'admin_status' => $port->admin_status ?: 'unknown',
+                    'oper_status' => $port->oper_status ?: 'unknown',
+                    'speed' => $port->speed,
+                    'status_source' => $port->status_source ?: 'snmp_poll',
+                    'last_seen' => optional($port->last_seen)->toIso8601String(),
+                    'last_change' => optional($port->last_change ?? $port->last_change_at)->toIso8601String(),
+                ];
+            })
+            ->values();
+
+        $lastUpdate = $ports
+            ->pluck('last_seen')
+            ->filter()
+            ->map(fn (string $value) => Carbon::parse($value))
+            ->max();
+
+        return response()->json([
+            'data' => $ports,
+            'meta' => [
+                'switch_id' => $switch->id,
+                'last_update' => $lastUpdate?->toIso8601String(),
+            ],
         ]);
     }
 

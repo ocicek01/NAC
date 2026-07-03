@@ -27,6 +27,8 @@
         'monitor' => 'Monitor Only',
         'blocked' => 'Blocked',
         'down' => 'Down',
+        'admin_down' => 'Admin Down',
+        'unknown' => 'Unknown',
         'quarantine' => 'Quarantine',
         'guest' => 'Guest',
         'empty' => 'Bos',
@@ -38,6 +40,8 @@
         'monitor' => '#2f6fec',
         'blocked' => '#ef4444',
         'down' => '#94a3b8',
+        'admin_down' => '#ef4444',
+        'unknown' => '#facc15',
         'quarantine' => '#8e59d1',
         'guest' => '#facc15',
         'empty' => '#b8c3d3',
@@ -335,6 +339,8 @@
         .port-tile.state-monitor { background:#2f6fec; }
         .port-tile.state-blocked { background:#ef4444; }
         .port-tile.state-down { background:#94a3b8; }
+        .port-tile.state-admin_down { background:#ef4444; }
+        .port-tile.state-unknown { background:#facc15; }
         .port-tile.state-quarantine { background:#8e59d1; }
         .port-tile.state-guest { background:#facc15; }
         .port-tile.state-empty { background:#b8c3d3; }
@@ -355,6 +361,8 @@
         .uplink-port.state-monitor { background:#2f6fec; }
         .uplink-port.state-blocked { background:#ef4444; }
         .uplink-port.state-down { background:#94a3b8; }
+        .uplink-port.state-admin_down { background:#ef4444; }
+        .uplink-port.state-unknown { background:#facc15; color:#13233d; }
         .uplink-port.state-quarantine { background:#8e59d1; }
         .uplink-port.state-guest { background:#facc15; }
         .uplink-port.state-empty { background:#b8c3d3; color:#13233d; }
@@ -615,6 +623,8 @@
                                                             class="port-tile {{ $port ? 'state-'.$port['state'].' '.(($port['isUplink'] ?? false) ? 'is-uplink-role ' : '').($port['id'] === $switchData['selectedPort'] ? 'is-selected' : '') : 'is-placeholder' }}"
                                                             @if($port)
                                                                 data-port-id="{{ $port['id'] }}"
+                                                        data-if-index="{{ $port['if_index'] ?? '' }}"
+                                                                data-if-index="{{ $port['if_index'] ?? '' }}"
                                                                 data-bs-toggle="tooltip"
                                                                 data-bs-html="true"
                                                                 title="<div class='text-start'><div class='fw-bold mb-1'>{{ $port['label'] }}</div><div><strong>Status:</strong> {{ $statusLabels[$port['state']] ?? ucfirst($port['state']) }}</div><div><strong>User:</strong> {{ filled($port['user']) && $port['user'] !== '-' ? $port['user'] : 'RADIUS verisi bekleniyor' }}</div><div><strong>MAC:</strong> {{ $port['mac'] }}</div><div><strong>IP:</strong> {{ $port['ip'] }}</div><div><strong>Hostname:</strong> {{ $port['hostname'] }}</div><div><strong>Policy:</strong> {{ filled($port['policy']) && $port['policy'] !== '-' ? $port['policy'] : 'NAC policy verisi bekleniyor' }}</div><div><strong>Role:</strong> {{ filled($port['role'] ?? null) && ($port['role'] ?? '-') !== '-' ? $port['role'] : 'NAC role verisi bekleniyor' }}</div><div><strong>VLAN:</strong> {{ $port['vlan'] }}</div><div><strong>Device Type:</strong> {{ filled($port['deviceType'] ?? null) && ($port['deviceType'] ?? '-') !== '-' ? $port['deviceType'] : 'Profiling verisi bekleniyor' }}</div><div><strong>Last Auth Result:</strong> {{ $port['auth'] }}</div></div>"
@@ -633,6 +643,7 @@
                                                     <div
                                                         class="uplink-port state-{{ $port['state'] }} {{ ($port['isUplink'] ?? false) ? 'is-uplink-role ' : '' }}{{ $port['id'] === $switchData['selectedPort'] ? 'is-selected' : '' }}"
                                                         data-port-id="{{ $port['id'] }}"
+                                                        data-if-index="{{ $port['if_index'] ?? '' }}"
                                                         data-bs-toggle="tooltip"
                                                         data-bs-html="true"
                                                         title="<div class='text-start'><div class='fw-bold mb-1'>{{ $port['label'] }}</div><div><strong>Status:</strong> {{ $statusLabels[$port['state']] ?? ucfirst($port['state']) }}</div><div><strong>User:</strong> {{ filled($port['user']) && $port['user'] !== '-' ? $port['user'] : 'RADIUS verisi bekleniyor' }}</div><div><strong>MAC:</strong> {{ $port['mac'] }}</div><div><strong>IP:</strong> {{ $port['ip'] }}</div><div><strong>Hostname:</strong> {{ $port['hostname'] }}</div><div><strong>Policy:</strong> {{ filled($port['policy']) && $port['policy'] !== '-' ? $port['policy'] : 'NAC policy verisi bekleniyor' }}</div><div><strong>Role:</strong> {{ filled($port['role'] ?? null) && ($port['role'] ?? '-') !== '-' ? $port['role'] : 'NAC role verisi bekleniyor' }}</div><div><strong>VLAN:</strong> {{ $port['vlan'] }}</div><div><strong>Device Type:</strong> {{ filled($port['deviceType'] ?? null) && ($port['deviceType'] ?? '-') !== '-' ? $port['deviceType'] : 'Profiling verisi bekleniyor' }}</div><div><strong>Last Auth Result:</strong> {{ $port['auth'] }}</div></div>"
@@ -647,7 +658,7 @@
                                 @foreach ($legendItems as $legend)
                                     <span><span class="dot" style="background: {{ $legend['color'] }};"></span>{{ $legend['label'] }}</span>
                                 @endforeach
-                                <span class="panel-update">Son guncelleme: 10:24:35 <i class="bi bi-arrow-clockwise ms-2"></i></span>
+                                <span class="panel-update" id="panel-last-update">Son guncelleme: {{ $switchData['lastSeen'] ?? '-' }} <i class="bi bi-arrow-clockwise ms-2"></i></span>
                             </div>
                         </div>
                     </div>
@@ -905,6 +916,7 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         const portData = @json($portPayload);
+        const statusLabels = @json($statusLabels);
         const stateColors = @json($stateDots);
         const portMap = Object.fromEntries(portData.map(function (item) {
             return [String(item.id), item];
@@ -952,6 +964,8 @@
         const availableVlans = @json($availableVlans);
         const csrfToken = @json(csrf_token());
         const switchPortActionUrlTemplate = @json(url('/switch-ports/__PORT__/actions'));
+        const portStatusUrl = switchId ? '/api/switches/' + switchId + '/ports/status' : null;
+        const portEventsUrl = '/api/events/ports';
         const portAllowForm = document.getElementById('port-allow-form');
         const portGuestForm = document.getElementById('port-guest-form');
         const portBlockForm = document.getElementById('port-block-form');
@@ -1494,6 +1508,130 @@
             return '/devices/' + encodeURIComponent(mac) + '/' + type;
         }
 
+        function liveStateForPort(data) {
+            const adminStatus = String(data.admin_status || '').toLowerCase();
+            const operStatus = String(data.oper_status || '').toLowerCase();
+
+            if (adminStatus === 'down') {
+                return 'admin_down';
+            }
+            if (operStatus === 'up') {
+                return 'up';
+            }
+            if (operStatus === 'down') {
+                return 'down';
+            }
+
+            return 'unknown';
+        }
+
+        function liveStatusText(state) {
+            return statusLabels[state] || state;
+        }
+
+        function updatePanelLastUpdate(value) {
+            const node = document.getElementById('panel-last-update');
+            if (!node) {
+                return;
+            }
+
+            const text = value && value !== '-' ? value : '-';
+            node.innerHTML = 'Son guncelleme: ' + text + ' <i class="bi bi-arrow-clockwise ms-2"></i>';
+        }
+
+        function applyPortStateToTile(portId, state) {
+            document.querySelectorAll('[data-port-id="' + String(portId) + '"]').forEach(function (tile) {
+                Array.from(tile.classList)
+                    .filter(function (className) { return className.indexOf('state-') === 0; })
+                    .forEach(function (className) { tile.classList.remove(className); });
+                tile.classList.add('state-' + state);
+            });
+        }
+
+        function mergePortStatus(statusItem) {
+            const portId = String(statusItem.port_id || '');
+            if (!portId || !portMap[portId]) {
+                return;
+            }
+
+            const liveState = liveStateForPort(statusItem);
+            mergePortData(portId, {
+                if_index: statusItem.if_index,
+                if_name: statusItem.if_name,
+                admin_status: statusItem.admin_status,
+                oper_status: statusItem.oper_status,
+                speed: statusItem.speed || portMap[portId].speed,
+                speedLabel: statusItem.speed && statusItem.speed !== '0' ? statusItem.speed + ' (' + (portMap[portId].duplex || '-') + ')' : portMap[portId].speedLabel,
+                state: liveState,
+                statusText: liveStatusText(liveState),
+                lastSeen: statusItem.last_seen ? new Date(statusItem.last_seen).toLocaleString('tr-TR') : (portMap[portId].lastSeen || '-'),
+                lastChange: statusItem.last_change ? new Date(statusItem.last_change).toLocaleTimeString('tr-TR') : (portMap[portId].lastChange || '-'),
+            });
+
+            applyPortStateToTile(portId, liveState);
+
+            if (String(currentSelectedPortId) === portId) {
+                updateSelectedPort(portId);
+            }
+            if (selectedContextPort && String(selectedContextPort.id) === portId) {
+                selectedContextPort = portMap[portId];
+            }
+        }
+
+        async function loadPortStatuses() {
+            if (!portStatusUrl) {
+                return;
+            }
+
+            const response = await fetch(portStatusUrl, {
+                headers: {
+                    'Accept': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
+            });
+
+            if (!response.ok) {
+                throw new Error('Port status verisi alinamadi.');
+            }
+
+            const payload = await response.json();
+            (payload.data || []).forEach(function (item) {
+                mergePortStatus(item);
+            });
+
+            const lastUpdate = payload.meta && payload.meta.last_update ? new Date(payload.meta.last_update).toLocaleString('tr-TR') : '-';
+            updatePanelLastUpdate(lastUpdate);
+        }
+
+        function startPortStatusStream() {
+            if (!switchId || typeof EventSource === 'undefined') {
+                return;
+            }
+
+            const source = new EventSource(portEventsUrl);
+            source.addEventListener('port_status_changed', function (event) {
+                try {
+                    const payload = JSON.parse(event.data || '{}');
+                    if (String(payload.switch_id) !== String(switchId)) {
+                        return;
+                    }
+
+                    mergePortStatus({
+                        port_id: payload.port_id,
+                        port_no: payload.port_no,
+                        if_index: payload.if_index,
+                        if_name: payload.if_name,
+                        admin_status: payload.admin_status,
+                        oper_status: payload.new_oper_status,
+                        last_seen: payload.last_seen || payload.changed_at,
+                        last_change: payload.changed_at,
+                    });
+                    updatePanelLastUpdate(payload.changed_at ? new Date(payload.changed_at).toLocaleString('tr-TR') : '-');
+                } catch (error) {
+                    console.error(error);
+                }
+            });
+        }
         function resolveAllowVlan(data) {
             const role = String(data.role || '').toLowerCase();
             if (role === 'ogrenci' || role === 'misafir') {
@@ -1732,10 +1870,15 @@
         if (portMap[String(currentSelectedPortId)]) {
             syncPortActionForms(portMap[String(currentSelectedPortId)]);
         }
+        loadPortStatuses().catch(function (error) {
+            console.error(error);
+        });
+        startPortStatusStream();
         window.addEventListener('scroll', hideContextMenu, true);
         window.addEventListener('resize', hideContextMenu);
     </script>
 </body>
 </html>
+
 
 

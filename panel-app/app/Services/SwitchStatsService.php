@@ -212,7 +212,11 @@ class SwitchStatsService
             'speedLabel' => $speedLabel === '0' ? '-' : $speedLabel.' ('.$port->duplex.')',
             'duplex' => $speedLabel === '0' ? '-' : $port->duplex,
             'poe' => $port->poe_enabled ? 'PoE+ ('.rtrim(rtrim((string) $port->poe_power, '0'), '.').' W)' : 'Kapali',
-            'lastChange' => optional($port->last_change_at)->format('H:i:s'),
+            'lastChange' => optional($port->last_change ?? $port->last_change_at)->format('H:i:s'),
+            'lastSeen' => optional($port->last_seen)->format('d.m.Y H:i:s'),
+            'if_index' => $port->if_index,
+            'admin_status' => $port->admin_status ?: 'unknown',
+            'oper_status' => $port->oper_status ?: 'unknown',
             'auth' => $this->authLabel($state),
             'portType' => $portTypeLabel,
             'port_type' => $portTypeLabel,
@@ -265,6 +269,21 @@ class SwitchStatsService
 
     protected function portVisualState(SwitchPort $port, ?string $endpointStatus, ?array $goPort = null, ?array $goDevice = null): string
     {
+        $adminStatus = strtolower(trim((string) ($port->admin_status ?? '')));
+        $operStatus = strtolower(trim((string) ($port->oper_status ?? '')));
+
+        if ($adminStatus !== '' || $operStatus !== '') {
+            if ($adminStatus === 'down') {
+                return 'admin_down';
+            }
+
+            return match ($operStatus) {
+                'up' => 'up',
+                'down' => 'down',
+                default => 'unknown',
+            };
+        }
+
         $goPolicy = strtolower(trim((string) ($goDevice['policy_action'] ?? '')));
         $goStatus = strtolower(trim((string) ($goDevice['status'] ?? '')));
         $goAppliedVlan = (int) ($goDevice['applied_enforcement_vlan'] ?? 0);
@@ -353,6 +372,8 @@ class SwitchStatsService
             'monitor' => 'Monitor Only',
             'blocked' => 'Blocked',
             'down' => 'Down',
+            'admin_down' => 'Admin Down',
+            'unknown' => 'Unknown',
             'quarantine' => 'Quarantine',
             'guest' => 'Guest',
             'empty' => 'Bos',
@@ -367,6 +388,8 @@ class SwitchStatsService
             'monitor' => 'Monitor: Riskli Davranis',
             'blocked' => 'Policy Reject',
             'down' => 'Port Down',
+            'admin_down' => 'Admin Down',
+            'unknown' => 'Status Bilinmiyor',
             'guest' => 'Guest Portal',
             'quarantine' => 'Reddedildi',
             'disabled' => 'Disabled',
@@ -1331,5 +1354,7 @@ class SwitchStatsService
         ];
     }
 }
+
+
 
 

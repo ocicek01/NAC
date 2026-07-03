@@ -170,3 +170,4 @@ class NacApiTest extends TestCase
             ->assertJsonPath('data.selected_port_id', $port->id);
     }
 }
+

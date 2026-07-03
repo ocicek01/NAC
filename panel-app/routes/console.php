@@ -1,10 +1,12 @@
 <?php
 
+use App\Models\NetworkSwitch;
+use App\Services\SnmpPortDiscoveryService;
+use App\Services\SnmpPortStatusPollingService;
+use App\Services\SwitchInventoryImportService;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
-use App\Services\SwitchInventoryImportService;
-use App\Services\SnmpPortDiscoveryService;
-use App\Models\NetworkSwitch;
+use Illuminate\Support\Facades\Schedule;
 
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
@@ -52,3 +54,41 @@ Artisan::command('nac:discover-ports {switchId?} {--zone=} {--hostname=}', funct
 
     return 0;
 })->purpose('Discover switch ports over SNMP and store them in switch_ports');
+
+Artisan::command('nac:poll-port-status {switchId?} {--hostname=}', function (SnmpPortStatusPollingService $pollingService) {
+    $switchId = $this->argument('switchId');
+    $query = NetworkSwitch::query()
+        ->where('managed', true)
+        ->whereNotNull('snmp_community')
+        ->orderBy('hostname');
+
+    if ($switchId !== null) {
+        $query->whereKey($switchId);
+    }
+
+    if ($hostname = $this->option('hostname')) {
+        $query->where('hostname', $hostname);
+    }
+
+    $switches = $query->get();
+
+    if ($switches->isEmpty()) {
+        $this->warn('Polling icin switch bulunamadi.');
+        return 1;
+    }
+
+    foreach ($pollingService->pollAll($switches) as $result) {
+        if ($result['ok']) {
+            $this->info("{$result['hostname']} => {$result['ports']} port durumu guncellendi");
+            continue;
+        }
+
+        $this->warn("{$result['hostname']} => {$result['error']}");
+    }
+
+    return 0;
+})->purpose('Poll live switch port status over SNMP and update switch_ports');
+
+Schedule::command('nac:poll-port-status')
+    ->everyThirtySeconds()
+    ->withoutOverlapping();
