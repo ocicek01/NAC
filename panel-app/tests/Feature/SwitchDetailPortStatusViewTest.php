@@ -15,13 +15,15 @@ class SwitchDetailPortStatusViewTest extends TestCase
 
     public function test_switch_detail_marks_admin_down_port_with_live_status_class(): void
     {
+        config()->set('services.nac.switch_detail_remote_enrichment', false);
+
         $this->mock(NacApiClient::class, function ($mock): void {
-            $mock->shouldReceive('resolveSwitch')->andReturn([]);
-            $mock->shouldReceive('switches')->andReturn([]);
-            $mock->shouldReceive('topologyLinks')->andReturn([]);
-            $mock->shouldReceive('switchPorts')->andReturn([]);
-            $mock->shouldReceive('switchPortSummary')->andReturn([]);
-            $mock->shouldReceive('devicesBySwitch')->andReturn([]);
+            $mock->shouldNotReceive('resolveSwitch');
+            $mock->shouldNotReceive('switches');
+            $mock->shouldNotReceive('topologyLinks');
+            $mock->shouldNotReceive('switchPorts');
+            $mock->shouldNotReceive('switchPortSummary');
+            $mock->shouldNotReceive('devicesBySwitch');
         });
 
         $zone = Zone::query()->create([

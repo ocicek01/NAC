@@ -42,6 +42,7 @@ return [
         'connect_timeout' => env('NAC_API_CONNECT_TIMEOUT', 3),
         'retry_times' => env('NAC_API_RETRY_TIMES', 2),
         'retry_sleep_ms' => env('NAC_API_RETRY_SLEEP_MS', 200),
+        'switch_detail_remote_enrichment' => env('NAC_SWITCH_DETAIL_REMOTE_ENRICHMENT', false),
         'default_allow_vlan' => env('NAC_DEFAULT_ALLOW_VLAN', 106),
         'guest_vlan' => env('NAC_GUEST_VLAN', 300),
         'quarantine_vlan' => env('NAC_QUARANTINE_VLAN', 333),

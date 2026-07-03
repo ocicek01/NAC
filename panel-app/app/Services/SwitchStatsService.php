@@ -52,10 +52,17 @@ class SwitchStatsService
     public function detail(NetworkSwitch $switch): array
     {
         $ports = $switch->ports;
-        $topologyLinks = $this->topologyLinksForSwitch($switch);
-        $goPorts = $this->goPortsForSwitch($switch);
-        $goDevices = $this->goDevicesForSwitch($switch);
-        $goPortSummary = $this->goPortSummaryForSwitch($switch);
+        $topologyLinks = [];
+        $goPorts = [];
+        $goDevices = [];
+        $goPortSummary = [];
+
+        if ($this->shouldLoadRemoteSwitchDetailEnrichment()) {
+            $topologyLinks = $this->topologyLinksForSwitch($switch);
+            $goPorts = $this->goPortsForSwitch($switch);
+            $goDevices = $this->goDevicesForSwitch($switch);
+            $goPortSummary = $this->goPortSummaryForSwitch($switch);
+        }
         $effectivePortCount = $ports->count() > 0 ? $ports->count() : $switch->port_count;
         $portPayload = $ports
             ->map(fn ($port) => $this->portPayload($port, $topologyLinks, $goPorts, $goDevices))
@@ -364,6 +371,11 @@ class SwitchStatsService
             'unmanaged' => 'Yonetilmiyor',
             default => 'Online',
         };
+    }
+
+    protected function shouldLoadRemoteSwitchDetailEnrichment(): bool
+    {
+        return (bool) config('services.nac.switch_detail_remote_enrichment', false);
     }
 
     protected function portStatusLabel(string $state): string
