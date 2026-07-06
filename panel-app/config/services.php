@@ -45,10 +45,13 @@ return [
         'switch_detail_remote_enrichment' => env('NAC_SWITCH_DETAIL_REMOTE_ENRICHMENT', false),
         'discovery_schedule_enabled' => env('NAC_DISCOVERY_SCHEDULE_ENABLED', true),
         'discovery_schedule_minutes' => env('NAC_DISCOVERY_SCHEDULE_MINUTES', 10),
+        'trap_ingest_enabled' => env('NAC_TRAP_INGEST_ENABLED', true),
+        'trap_ingest_token' => env('NAC_TRAP_INGEST_TOKEN'),
         'default_allow_vlan' => env('NAC_DEFAULT_ALLOW_VLAN', 106),
         'guest_vlan' => env('NAC_GUEST_VLAN', 300),
         'quarantine_vlan' => env('NAC_QUARANTINE_VLAN', 333),
     ],
 
 ];
+
 

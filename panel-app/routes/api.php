@@ -5,6 +5,7 @@ use App\Http\Controllers\Api\NacActionController;
 use App\Http\Controllers\Api\PortStatusEventController;
 use App\Http\Controllers\Api\SwitchController;
 use App\Http\Controllers\Api\SwitchPortController;
+use App\Http\Controllers\Api\SnmpTrapController;
 use App\Http\Controllers\Api\ZoneController;
 use Illuminate\Support\Facades\Route;
 
@@ -28,3 +29,5 @@ Route::put('/switch-ports/{port}/nac-mode', [SwitchPortController::class, 'updat
 Route::post('/switch-ports/{port}/actions', [NacActionController::class, 'store']);
 
 Route::get('/events/ports', [PortStatusEventController::class, 'stream']);
+Route::post('/traps/snmp', [SnmpTrapController::class, 'store']);
+
