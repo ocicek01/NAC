@@ -25,7 +25,7 @@ class SwitchPortController extends Controller
 
     public function show(SwitchPort $port): JsonResponse
     {
-        $port->loadMissing('currentLocation.endpoint');
+        $port->loadMissing(['switch', 'currentLocation.endpoint']);
 
         return response()->json([
             'data' => $this->switchStatsService->portDetail($port),

@@ -256,8 +256,9 @@ class SwitchStatsService
     public function portDetail(SwitchPort $port): array
     {
         $goPorts = $port->switch ? $this->goPortsForSwitch($port->switch) : [];
+        $goDevices = $port->switch ? $this->goDevicesForSwitch($port->switch) : [];
 
-        return $this->portPayload($port, [], $goPorts) + [
+        return $this->portPayload($port, [], $goPorts, $goDevices) + [
             'status' => $port->status,
             'nac_mode' => $port->nac_mode,
             'switch_id' => $port->switch_id,
@@ -832,11 +833,23 @@ class SwitchStatsService
 
     protected function goDeviceCandidates(array $device): array
     {
-        return $this->goPortCandidates(
-            (string) ($device['current_interface_name'] ?? ''),
-            null,
-            $device['current_if_index'] ?? null
-        );
+        return array_values(array_unique(array_filter(array_merge(
+            $this->goPortCandidates(
+                (string) ($device['current_interface_name'] ?? ''),
+                $device['current_port_index'] ?? null,
+                $device['current_if_index'] ?? null
+            ),
+            $this->goPortCandidates(
+                (string) ($device['interface_name'] ?? ''),
+                $device['port_index'] ?? null,
+                $device['if_index'] ?? null
+            ),
+            $this->goPortCandidates(
+                (string) ($device['port_name'] ?? ''),
+                $device['port_index'] ?? null,
+                $device['if_index'] ?? null
+            )
+        ))));
     }
 
     protected function goPortCandidates(string $name, mixed $portIndex = null, mixed $ifIndex = null): array
