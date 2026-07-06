@@ -56,6 +56,7 @@ return [
         'guest_vlan' => env('NAC_GUEST_VLAN', 300),
         'quarantine_vlan' => env('NAC_QUARANTINE_VLAN', 333),
         'port_status_source_lock_seconds' => env('NAC_PORT_STATUS_SOURCE_LOCK_SECONDS', 90),
+        'polling_failure_threshold' => env('NAC_POLLING_FAILURE_THRESHOLD', 3),
     ],
 
 ];

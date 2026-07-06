@@ -3,8 +3,8 @@
 namespace Tests\Unit;
 
 use App\Models\NetworkSwitch;
+use App\Models\SwitchPort;
 use App\Models\Zone;
-use App\Services\AuditLogService;
 use App\Services\PortStatusUpdater;
 use App\Services\SnmpPortStatusPollingService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -32,6 +32,8 @@ class SnmpPortStatusPollingServiceTest extends TestCase
 
         $this->assertTrue($result['ok']);
         $this->assertSame(1, $result['ports']);
+        $this->assertSame('online', $result['switch_status']);
+        $this->assertSame(0, $result['consecutive_failures']);
         $this->assertDatabaseHas('switch_ports', [
             'switch_id' => $switch->id,
             'if_index' => 10,
@@ -41,11 +43,14 @@ class SnmpPortStatusPollingServiceTest extends TestCase
             'id' => $switch->id,
             'status' => 'online',
             'consecutive_polling_failures' => 0,
+            'polling_error' => null,
         ]);
     }
 
     public function test_poll_switch_marks_switch_warning_then_offline_after_failures(): void
     {
+        config(['services.nac.polling_failure_threshold' => 3]);
+
         $switch = $this->makeSwitch();
         $service = new FakeSnmpPortStatusPollingService($this->app->make(PortStatusUpdater::class), [], true);
 
@@ -54,13 +59,83 @@ class SnmpPortStatusPollingServiceTest extends TestCase
         $third = $service->pollSwitch($switch->fresh());
 
         $this->assertFalse($first['ok']);
+        $this->assertSame('warning', $first['switch_status']);
+        $this->assertSame(1, $first['consecutive_failures']);
+
         $this->assertFalse($second['ok']);
+        $this->assertSame('warning', $second['switch_status']);
+        $this->assertSame(2, $second['consecutive_failures']);
+
         $this->assertFalse($third['ok']);
+        $this->assertSame('offline', $third['switch_status']);
+        $this->assertSame(3, $third['consecutive_failures']);
+
         $this->assertDatabaseHas('switches', [
             'id' => $switch->id,
             'status' => 'offline',
             'consecutive_polling_failures' => 3,
+            'polling_error' => 'SNMP timeout',
         ]);
+    }
+
+    public function test_successful_poll_resets_failure_state_and_clears_error(): void
+    {
+        config(['services.nac.polling_failure_threshold' => 3]);
+
+        $switch = $this->makeSwitch();
+        $switch->forceFill([
+            'status' => 'warning',
+            'consecutive_polling_failures' => 2,
+            'polling_error' => 'SNMP timeout',
+        ])->save();
+
+        $service = new FakeSnmpPortStatusPollingService($this->app->make(PortStatusUpdater::class), [
+            [
+                'if_index' => 22,
+                'if_name' => 'Gi1/0/22',
+                'if_descr' => 'Port 22',
+                'admin_status' => 'up',
+                'oper_status' => 'down',
+                'speed' => '1 Gbps',
+            ],
+        ]);
+
+        $result = $service->pollSwitch($switch->fresh());
+
+        $this->assertTrue($result['ok']);
+        $this->assertSame('online', $result['switch_status']);
+        $this->assertSame(0, $result['consecutive_failures']);
+        $this->assertDatabaseHas('switches', [
+            'id' => $switch->id,
+            'status' => 'online',
+            'consecutive_polling_failures' => 0,
+            'polling_error' => null,
+        ]);
+    }
+
+    public function test_failed_poll_does_not_force_existing_ports_down(): void
+    {
+        config(['services.nac.polling_failure_threshold' => 3]);
+
+        $switch = $this->makeSwitch();
+        SwitchPort::query()->create([
+            'switch_id' => $switch->id,
+            'if_index' => 32,
+            'port_index' => 32,
+            'port_name' => '32',
+            'status' => 'up',
+            'admin_status' => 'up',
+            'oper_status' => 'up',
+            'status_source' => 'snmp_trap',
+        ]);
+
+        $service = new FakeSnmpPortStatusPollingService($this->app->make(PortStatusUpdater::class), [], true);
+        $service->pollSwitch($switch->fresh());
+
+        $port = SwitchPort::query()->where('switch_id', $switch->id)->where('if_index', 32)->firstOrFail();
+        $this->assertSame('up', $port->admin_status);
+        $this->assertSame('up', $port->oper_status);
+        $this->assertSame('snmp_trap', $port->status_source);
     }
 
     private function makeSwitch(): NetworkSwitch
@@ -106,3 +181,4 @@ class FakeSnmpPortStatusPollingService extends SnmpPortStatusPollingService
         return $this->ports;
     }
 }
+

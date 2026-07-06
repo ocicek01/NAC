@@ -80,3 +80,5 @@ Laravel trap ingest icin gereken anahtarlar:
 
 - `NAC_TRAP_INGEST_ENABLED`
 - `NAC_TRAP_INGEST_TOKEN`
+- `NAC_POLLING_FAILURE_THRESHOLD`
+

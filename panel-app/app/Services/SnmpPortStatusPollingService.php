@@ -77,9 +77,11 @@ class SnmpPortStatusPollingService
                 'hostname' => $switch->hostname,
                 'ok' => true,
                 'ports' => count($ports),
+                'switch_status' => 'online',
+                'consecutive_failures' => 0,
             ];
         } catch (\Throwable $exception) {
-            $this->markPollingFailure($switch, $exception);
+            $failureState = $this->markPollingFailure($switch, $exception);
 
             return [
                 'switch_id' => $switch->id,
@@ -87,6 +89,8 @@ class SnmpPortStatusPollingService
                 'ok' => false,
                 'ports' => 0,
                 'error' => $exception->getMessage(),
+                'switch_status' => $failureState['status'],
+                'consecutive_failures' => $failureState['consecutive_failures'],
             ];
         }
     }
@@ -276,11 +280,10 @@ class SnmpPortStatusPollingService
         return $trimmed === '' ? null : $trimmed;
     }
 
-    protected function markPollingFailure(NetworkSwitch $switch, \Throwable $exception): void
+    protected function markPollingFailure(NetworkSwitch $switch, \Throwable $exception): array
     {
         $failures = (int) $switch->consecutive_polling_failures + 1;
-        $threshold = max(1, (int) config('services.switch_port_status.switch_failure_threshold', 3));
-        $status = $failures >= $threshold ? 'offline' : 'warning';
+        $status = $this->failureStatusFor($failures);
 
         $switch->forceFill([
             'status' => $status,
@@ -292,7 +295,21 @@ class SnmpPortStatusPollingService
         Log::warning(sprintf('Switch port polling failed for %s (%s)', $switch->hostname, $switch->ip_address), [
             'switch_id' => $switch->id,
             'failures' => $failures,
+            'status' => $status,
             'error' => $exception->getMessage(),
         ]);
+
+        return [
+            'status' => $status,
+            'consecutive_failures' => $failures,
+        ];
+    }
+
+    protected function failureStatusFor(int $failures): string
+    {
+        $threshold = max(1, (int) config('services.nac.polling_failure_threshold', 3));
+
+        return $failures >= $threshold ? 'offline' : 'warning';
     }
 }
+
