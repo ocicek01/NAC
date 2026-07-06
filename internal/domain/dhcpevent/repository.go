@@ -8,6 +8,7 @@ import (
 type Repository interface {
 	FindRecentByTransaction(ctx context.Context, macAddress, messageType, transactionID string, since time.Time) (*Event, error)
 	FindRecent(ctx context.Context, macAddress, messageType string, since time.Time) (*Event, error)
+	FindLatestByMAC(ctx context.Context, macAddress string) (*Event, error)
 	Insert(ctx context.Context, event Event) (Event, error)
 	UpdateByID(ctx context.Context, id string, event Event) (Event, error)
 }

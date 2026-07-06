@@ -67,6 +67,10 @@ type MACIPBindingResolver interface {
 	FindLatestByMACSwitch(ctx context.Context, macAddress, switchID string) (*macipbindingdomain.Binding, error)
 }
 
+type DHCPEventResolver interface {
+	FindLatestByMAC(ctx context.Context, macAddress string) (*dhcpevent.Event, error)
+}
+
 type Service struct {
 	repository           domain.Repository
 	policies             PolicyEvaluator
@@ -76,6 +80,7 @@ type Service struct {
 	portEndpoints        PortEndpointResolver
 	sessions             SessionResolver
 	macIPBindings        MACIPBindingResolver
+	dhcpEvents           DHCPEventResolver
 	registrationVLAN     int
 	guestVLAN            int
 	quarantineVLAN       int
@@ -112,7 +117,7 @@ type RadiusInventoryInput struct {
 	PolicyReasonOverride string
 }
 
-func NewService(logger *slog.Logger, repository domain.Repository, policies PolicyEvaluator, enforcement EnforcementRecorder, switchPorts SwitchPortResolver, portEndpoints PortEndpointResolver, sessions SessionResolver, macIPBindings MACIPBindingResolver, registrationVLAN, guestVLAN, quarantineVLAN int, autoExecute bool, ipLearningEnabled bool, ipLearningWait, ipRecheck, portBounceDelay time.Duration, portBounceEnabled bool, maxMACCountForBounce int) *Service {
+func NewService(logger *slog.Logger, repository domain.Repository, policies PolicyEvaluator, enforcement EnforcementRecorder, switchPorts SwitchPortResolver, portEndpoints PortEndpointResolver, sessions SessionResolver, macIPBindings MACIPBindingResolver, dhcpEvents DHCPEventResolver, registrationVLAN, guestVLAN, quarantineVLAN int, autoExecute bool, ipLearningEnabled bool, ipLearningWait, ipRecheck, portBounceDelay time.Duration, portBounceEnabled bool, maxMACCountForBounce int) *Service {
 	return &Service{
 		repository:           repository,
 		policies:             policies,
@@ -122,6 +127,7 @@ func NewService(logger *slog.Logger, repository domain.Repository, policies Poli
 		portEndpoints:        portEndpoints,
 		sessions:             sessions,
 		macIPBindings:        macIPBindings,
+		dhcpEvents:           dhcpEvents,
 		registrationVLAN:     registrationVLAN,
 		guestVLAN:            guestVLAN,
 		quarantineVLAN:       quarantineVLAN,
@@ -334,6 +340,31 @@ func (s *Service) enrichSyntheticObservedDevice(ctx context.Context, device *dom
 			}
 			if endpoint == nil {
 				device.CurrentSourceType = "radius_session"
+			}
+		}
+	}
+
+	if s.dhcpEvents != nil && (device.CurrentIPAddress == "" || device.Hostname == "") {
+		event, err := s.dhcpEvents.FindLatestByMAC(ctx, macAddress)
+		if err == nil && event != nil {
+			if device.CurrentIPAddress == "" {
+				for _, candidate := range []string{event.YourIP, event.RequestedIP, event.ClientIP} {
+					candidate = strings.TrimSpace(candidate)
+					if candidate != "" {
+						device.CurrentIPAddress = candidate
+						break
+					}
+				}
+			}
+			if device.Hostname == "" {
+				device.Hostname = strings.TrimSpace(event.Hostname)
+			}
+			if !event.ObservedAt.IsZero() && event.ObservedAt.After(device.LastSeenAt) {
+				device.LastSeenAt = event.ObservedAt
+				device.UpdatedAt = event.ObservedAt
+			}
+			if endpoint == nil && device.CurrentSourceType == "switch_port" {
+				device.CurrentSourceType = "dhcp_event"
 			}
 		}
 	}

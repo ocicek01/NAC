@@ -247,3 +247,62 @@ func (r *PostgresRepository) UpdateByID(ctx context.Context, id string, event do
 	event.ID = id
 	return event, nil
 }
+
+func (r *PostgresRepository) FindLatestByMAC(ctx context.Context, macAddress string) (*domain.Event, error) {
+	query := `
+		SELECT
+			id,
+			mac_address,
+			COALESCE(transaction_id, ''),
+			COALESCE(client_ip::text, ''),
+			COALESCE(your_ip::text, ''),
+			COALESCE(requested_ip::text, ''),
+			COALESCE(hostname, ''),
+			COALESCE(vendor_class, ''),
+			COALESCE(option82_raw, ''),
+			COALESCE(option82_circuit_id, ''),
+			COALESCE(option82_remote_id, ''),
+			COALESCE(option82_vlan, ''),
+			COALESCE(relay_ip::text, ''),
+			COALESCE(relay_switch_id::text, ''),
+			COALESCE(relay_switch_name, ''),
+			message_type,
+			COALESCE(source_ip::text, ''),
+			observed_at,
+			created_at
+		FROM dhcp_events
+		WHERE lower(mac_address) = lower($1)
+		ORDER BY observed_at DESC, created_at DESC
+		LIMIT 1
+	`
+
+	var event domain.Event
+	if err := r.pool.QueryRow(ctx, query, macAddress).Scan(
+		&event.ID,
+		&event.MACAddress,
+		&event.TransactionID,
+		&event.ClientIP,
+		&event.YourIP,
+		&event.RequestedIP,
+		&event.Hostname,
+		&event.VendorClass,
+		&event.Option82Raw,
+		&event.Option82CircuitID,
+		&event.Option82RemoteID,
+		&event.Option82VLAN,
+		&event.RelayIP,
+		&event.RelaySwitchID,
+		&event.RelaySwitchName,
+		&event.MessageType,
+		&event.SourceIP,
+		&event.ObservedAt,
+		&event.CreatedAt,
+	); err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	return &event, nil
+}

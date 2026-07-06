@@ -8,6 +8,7 @@ import (
 	"time"
 
 	devicedomain "nac/internal/domain/device"
+	dhcpeventdomain "nac/internal/domain/dhcpevent"
 	macipbindingdomain "nac/internal/domain/macipbinding"
 	portendpointdomain "nac/internal/domain/portendpoint"
 	sessiondomain "nac/internal/domain/session"
@@ -43,7 +44,7 @@ func TestListBySwitchAndIfIndexFallsBackToObservedPortData(t *testing.T) {
 		},
 	}
 
-	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, switchPorts, portEndpoints, nil, nil, 0, 0, 0, false, false, 0, 0, 0, false, 0)
+	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, switchPorts, portEndpoints, nil, nil, nil, 0, 0, 0, false, false, 0, 0, 0, false, 0)
 
 	devices, err := service.ListBySwitchAndIfIndex(context.Background(), "sw-1", 32)
 	if err != nil {
@@ -105,7 +106,7 @@ func TestListBySwitchAndIfIndexFallsBackToRadiusSessionAndBindingData(t *testing
 		},
 	}
 
-	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, switchPorts, nil, sessions, bindings, 0, 0, 0, false, false, 0, 0, 0, false, 0)
+	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, switchPorts, nil, sessions, bindings, nil, 0, 0, 0, false, false, 0, 0, 0, false, 0)
 
 	devices, err := service.ListBySwitchAndIfIndex(context.Background(), "sw-1", 32)
 	if err != nil {
@@ -122,6 +123,46 @@ func TestListBySwitchAndIfIndexFallsBackToRadiusSessionAndBindingData(t *testing
 	}
 	if devices[0].IdentityUsername != "ocicek" {
 		t.Fatalf("expected username from radius session, got %q", devices[0].IdentityUsername)
+	}
+}
+func TestListBySwitchAndIfIndexFallsBackToDHCPEventData(t *testing.T) {
+	repo := &stubDeviceRepository{}
+	switchPorts := &stubSwitchPortResolver{
+		byIfIndex: map[int]switchportdomain.Port{
+			32: {
+				SwitchID:             "sw-1",
+				IfIndex:              32,
+				InterfaceName:        "32",
+				InterfaceDescription: "32",
+				MACAddresses:         []string{"30:9C:23:9B:97:AA"},
+			},
+		},
+	}
+	dhcpEvents := &stubDHCPEventResolver{
+		byMAC: map[string]*dhcpeventdomain.Event{
+			"30:9C:23:9B:97:AA": {
+				MACAddress: "30:9C:23:9B:97:AA",
+				YourIP:     "10.6.8.10",
+				Hostname:   "pc-32",
+				ObservedAt: time.Date(2026, 7, 6, 12, 7, 0, 0, time.UTC),
+			},
+		},
+	}
+
+	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, switchPorts, nil, nil, nil, dhcpEvents, 0, 0, 0, false, false, 0, 0, 0, false, 0)
+
+	devices, err := service.ListBySwitchAndIfIndex(context.Background(), "sw-1", 32)
+	if err != nil {
+		t.Fatalf("ListBySwitchAndIfIndex returned error: %v", err)
+	}
+	if len(devices) != 1 {
+		t.Fatalf("expected 1 device, got %d", len(devices))
+	}
+	if devices[0].CurrentIPAddress != "10.6.8.10" {
+		t.Fatalf("expected IP from dhcp event, got %q", devices[0].CurrentIPAddress)
+	}
+	if devices[0].Hostname != "pc-32" {
+		t.Fatalf("expected hostname from dhcp event, got %q", devices[0].Hostname)
 	}
 }
 func TestListBySwitchKeepsRealInventoryAndAppendsObservedFallbacks(t *testing.T) {
@@ -144,7 +185,7 @@ func TestListBySwitchKeepsRealInventoryAndAppendsObservedFallbacks(t *testing.T)
 	}
 	portEndpoints := &stubPortEndpointResolver{}
 
-	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, switchPorts, portEndpoints, nil, nil, 0, 0, 0, false, false, 0, 0, 0, false, 0)
+	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, switchPorts, portEndpoints, nil, nil, nil, 0, 0, 0, false, false, 0, 0, 0, false, 0)
 
 	devices, err := service.ListBySwitch(context.Background(), "sw-1")
 	if err != nil {
@@ -242,6 +283,19 @@ type stubMACIPBindingResolver struct {
 
 func (s *stubMACIPBindingResolver) FindLatestByMACSwitch(ctx context.Context, macAddress, switchID string) (*macipbindingdomain.Binding, error) {
 	item, ok := s.byMAC[macAddress+"|"+switchID]
+	if !ok {
+		return nil, nil
+	}
+	copyItem := *item
+	return &copyItem, nil
+}
+
+type stubDHCPEventResolver struct {
+	byMAC map[string]*dhcpeventdomain.Event
+}
+
+func (s *stubDHCPEventResolver) FindLatestByMAC(ctx context.Context, macAddress string) (*dhcpeventdomain.Event, error) {
+	item, ok := s.byMAC[macAddress]
 	if !ok {
 		return nil, nil
 	}

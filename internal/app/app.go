@@ -115,6 +115,7 @@ func New(ctx context.Context) (*App, error) {
 	var policyRepository policydomain.Repository = policyrepository.NewPostgresRepository(postgresPool)
 	policyEngineService := policyservice.NewService(policyRepository)
 	var radiusEventRepository radiuseventdomain.Repository = radiuseventrepository.NewPostgresRepository(postgresPool)
+	var dhcpEventRepository dhcpdomain.Repository = dhcprepository.NewPostgresRepository(postgresPool)
 	var radiusSessionRepository sessiondomain.Repository = sessionrepository.NewPostgresRepository(postgresPool)
 	radiusSessionService := sessionservice.NewService(radiusSessionRepository)
 	var enforcementRepository enforcementdomain.Repository = enforcementrepository.NewPostgresRepository(postgresPool)
@@ -136,6 +137,7 @@ func New(ctx context.Context) (*App, error) {
 		portEndpointRepository,
 		radiusSessionRepository,
 		macIPBindingRepository,
+		dhcpEventRepository,
 		parseVLANID(cfg.Radius.RegistrationVLAN),
 		parseVLANID(cfg.Radius.GuestVLAN),
 		parseVLANID(cfg.Radius.QuarantineVLAN),
@@ -159,7 +161,6 @@ func New(ctx context.Context) (*App, error) {
 		snmpClient,
 		cfg.Feature.Option82CorrelationEnabled,
 	)
-	var dhcpEventRepository dhcpdomain.Repository = dhcprepository.NewPostgresRepository(postgresPool)
 	dhcpEventService := dhcpservice.NewService(dhcpEventRepository, switchRepository, macCorrelationService.Handle)
 	trapForwarder := snmptrapservice.NewHTTPPortStatusForwarder(cfg.SNMPTrap.ForwardEnabled, cfg.SNMPTrap.ForwardURL, cfg.SNMPTrap.ForwardToken, time.Duration(cfg.SNMPTrap.ForwardTimeoutSec)*time.Second)
 	snmpTrapService := snmptrapservice.NewService(logger, snmpTrapRepository, switchRepository, switchPortRepository, trapWindowService, trapForwarder)
