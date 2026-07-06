@@ -38,12 +38,26 @@ Bu repo NAC platformunun Go backend ve Laravel panel uygulamasini icerir.
 
 Go API icin trap forwarding ayarlari:
 
-- SNMP_TRAP_ENABLED
-- SNMP_TRAP_BIND_HOST
-- SNMP_TRAP_PORT
-- SNMP_TRAP_FORWARD_ENABLED
-- SNMP_TRAP_FORWARD_URL
-- SNMP_TRAP_FORWARD_TOKEN
-- SNMP_TRAP_FORWARD_TIMEOUT_SECONDS
+- `SNMP_TRAP_ENABLED`
+- `SNMP_TRAP_BIND_HOST`
+- `SNMP_TRAP_PORT`
+- `SNMP_TRAP_FORWARD_ENABLED`
+- `SNMP_TRAP_FORWARD_URL`
+- `SNMP_TRAP_FORWARD_TOKEN`
+- `SNMP_TRAP_FORWARD_TIMEOUT_SECONDS`
 
+## Systemd
 
+Ornek systemd unit dosyasi: `deploy/systemd/nac-api.service`
+
+Kurulum akisi:
+
+```bash
+sudo cp /opt/nac/deploy/systemd/nac-api.service /etc/systemd/system/nac-api.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now nac-api.service
+sudo systemctl restart nac-api.service
+sudo systemctl status nac-api.service
+```
+
+Bu servis Go API ile birlikte UDP `162` SNMP trap listener'ini de kaldirir. Ayrica ayri bir trap listener servisi gerekmez.

@@ -52,7 +52,7 @@ Default listener settings:
 - `NAC_TRAP_LISTENER_BUFFER_BYTES=65535`
 - `NAC_TRAP_VALIDATE_COMMUNITY=false`
 
-Run it manually:
+For local/manual debugging only:
 
 ```bash
 cd /opt/nac/panel-app
@@ -70,11 +70,13 @@ The listener currently supports SNMP v1/v2c trap packets and feeds the decoded
 interface data into the existing `SnmpTrapIngestService` and `PortStatusUpdater`
 flow with `source=snmp_trap`.
 
+Production note: the deployed setup listens on UDP `162` inside the Go
+`nac-api.service` process. The Laravel artisan listener is only for manual
+debugging or isolated packet tests.
+
 ## Env Keys
 
 Laravel trap ingest icin gereken anahtarlar:
 
-- NAC_TRAP_INGEST_ENABLED
-- NAC_TRAP_INGEST_TOKEN
-
-
+- `NAC_TRAP_INGEST_ENABLED`
+- `NAC_TRAP_INGEST_TOKEN`

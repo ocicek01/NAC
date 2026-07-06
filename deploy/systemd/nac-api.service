@@ -1,0 +1,18 @@
+[Unit]
+Description=NAC Go API
+After=network-online.target postgresql.service redis.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/nac
+EnvironmentFile=/opt/nac/.env
+ExecStart=/opt/nac/bin/nac
+Restart=always
+RestartSec=3
+StandardOutput=append:/var/log/nac-api.log
+StandardError=append:/var/log/nac-api.log
+
+[Install]
+WantedBy=multi-user.target
