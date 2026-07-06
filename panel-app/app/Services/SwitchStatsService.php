@@ -268,7 +268,7 @@ class SwitchStatsService
         return [
             ['label' => 'Up', 'value' => $states->filter(fn ($state) => $state === 'up')->count(), 'color' => '#41b349'],
             ['label' => 'Down', 'value' => $states->filter(fn ($state) => $state === 'down')->count(), 'color' => '#94a3b8'],
-            ['label' => 'Disabled', 'value' => $states->filter(fn ($state) => $state === 'disabled')->count(), 'color' => '#677489'],
+            ['label' => 'Admin Down', 'value' => $states->filter(fn ($state) => $state === 'admin_down')->count(), 'color' => '#ef4444'],
             ['label' => 'Guest', 'value' => $states->filter(fn ($state) => $state === 'guest')->count(), 'color' => '#facc15'],
             ['label' => 'Quarantine', 'value' => $states->filter(fn ($state) => $state === 'quarantine')->count(), 'color' => '#8e59d1'],
         ];
@@ -1366,7 +1366,4 @@ class SwitchStatsService
         ];
     }
 }
-
-
-
 

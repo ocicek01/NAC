@@ -33,3 +33,17 @@ Bu repo NAC platformunun Go backend ve Laravel panel uygulamasini icerir.
 
 - DHCP, RADIUS, SNMP trap, enforcement ve discovery akislarinin kodu bu repo icindedir.
 - Panel tarafinda switch detay, endpoint, NAC aksiyonlari ve VLAN tasima ekranlari bulunur.
+
+## Ortam Degiskenleri
+
+Go API icin trap forwarding ayarlari:
+
+- SNMP_TRAP_ENABLED
+- SNMP_TRAP_BIND_HOST
+- SNMP_TRAP_PORT
+- SNMP_TRAP_FORWARD_ENABLED
+- SNMP_TRAP_FORWARD_URL
+- SNMP_TRAP_FORWARD_TOKEN
+- SNMP_TRAP_FORWARD_TIMEOUT_SECONDS
+
+

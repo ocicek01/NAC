@@ -17,6 +17,7 @@
         ['label' => 'Guest', 'color' => '#facc15'],
         ['label' => 'Quarantine', 'color' => '#8e59d1'],
         ['label' => 'Blocked', 'color' => '#ef4444'],
+        ['label' => 'Admin Down', 'color' => '#ef4444'],
         ['label' => 'Down', 'color' => '#94a3b8'],
         ['label' => 'Monitor Only', 'color' => '#2f6fec'],
         ['label' => 'Uplink', 'color' => '#18b7c9'],
@@ -148,7 +149,7 @@
     $portStatusSegments = [
         ['label' => 'Up', 'value' => collect($switchData['ports'])->where('state', 'up')->count(), 'color' => '#41b349'],
         ['label' => 'Down', 'value' => collect($switchData['ports'])->where('state', 'down')->count(), 'color' => '#94a3b8'],
-        ['label' => 'Disabled', 'value' => collect($switchData['ports'])->where('state', 'disabled')->count(), 'color' => '#677489'],
+        ['label' => 'Admin Down', 'value' => collect($switchData['ports'])->where('state', 'admin_down')->count(), 'color' => '#ef4444'],
         ['label' => 'Guest', 'value' => collect($switchData['ports'])->where('state', 'guest')->count(), 'color' => '#facc15'],
         ['label' => 'Quarantine', 'value' => collect($switchData['ports'])->where('state', 'quarantine')->count(), 'color' => '#8e59d1'],
     ];
@@ -1881,3 +1882,4 @@
     </script>
 </body>
 </html>
+

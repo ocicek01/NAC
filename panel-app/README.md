@@ -70,3 +70,11 @@ The listener currently supports SNMP v1/v2c trap packets and feeds the decoded
 interface data into the existing `SnmpTrapIngestService` and `PortStatusUpdater`
 flow with `source=snmp_trap`.
 
+## Env Keys
+
+Laravel trap ingest icin gereken anahtarlar:
+
+- NAC_TRAP_INGEST_ENABLED
+- NAC_TRAP_INGEST_TOKEN
+
+
