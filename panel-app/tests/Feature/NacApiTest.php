@@ -228,6 +228,93 @@ class NacApiTest extends TestCase
             ->assertJsonPath('data.hostname', '-');
     }
 
+    public function test_switch_port_show_matches_go_device_by_port_mac_when_device_port_metadata_is_missing(): void
+    {
+        Cache::flush();
+        $zone = Zone::query()->create([
+            'name' => 'Kutuphane',
+            'slug' => 'kutuphane',
+            'status' => 'normal',
+        ]);
+
+        $switch = NetworkSwitch::query()->create([
+            'zone_id' => $zone->id,
+            'hostname' => 'sw-10-6-8-19',
+            'ip_address' => '10.6.8.19',
+            'vendor' => 'HP',
+            'model' => 'J9775A 2530-48G',
+            'status' => 'online',
+            'managed' => true,
+            'nac_mode' => 'monitor',
+            'port_count' => 52,
+        ]);
+
+        $port = SwitchPort::query()->create([
+            'switch_id' => $switch->id,
+            'if_index' => 32,
+            'port_index' => 32,
+            'port_name' => '32',
+            'status' => 'up',
+            'admin_status' => 'up',
+            'oper_status' => 'up',
+            'speed' => '1 Gbps',
+            'duplex' => 'Full',
+            'nac_mode' => 'inherit',
+            'last_seen' => now(),
+            'last_change' => now(),
+            'last_change_at' => now(),
+        ]);
+
+        $this->mock(NacApiClient::class, function ($mock) use ($switch): void {
+            $mock->shouldReceive('resolveSwitch')
+                ->once()
+                ->withArgs(fn (?string $hostname, ?string $managementIp) => $hostname === $switch->hostname && $managementIp === $switch->ip_address)
+                ->andReturn([
+                    'id' => 'go-switch-19',
+                    'name' => $switch->hostname,
+                    'management_ip' => $switch->ip_address,
+                ]);
+            $mock->shouldReceive('switchPorts')
+                ->once()
+                ->with('go-switch-19')
+                ->andReturn([
+                    [
+                        'if_index' => 32,
+                        'port_index' => 32,
+                        'interface_name' => '32',
+                        'mac_count' => 1,
+                        'mac_addresses' => ['30:9C:23:9B:97:AA'],
+                    ],
+                ]);
+            $mock->shouldReceive('devicesBySwitch')
+                ->once()
+                ->with('go-switch-19')
+                ->andReturn([
+                    [
+                        'mac_address' => '30:9C:23:9B:97:AA',
+                        'current_ip_address' => '10.6.9.93/32',
+                        'hostname' => 'omer_cicek',
+                        'device_type' => 'unknown',
+                        'identity_username' => 'omer.cicek',
+                        'status' => 'pending',
+                        'policy_action' => '',
+                    ],
+                ]);
+            $mock->shouldReceive('topologyLinks')->andReturn([]);
+            $mock->shouldReceive('switchPortSummary')->andReturn([]);
+            $mock->shouldReceive('switches')->never();
+            $mock->shouldReceive('discoveryJob')->andReturn([]);
+        });
+
+        $this->getJson('/api/switch-ports/'.$port->id)
+            ->assertOk()
+            ->assertJsonPath('data.mac', '30:9C:23:9B:97:AA')
+            ->assertJsonPath('data.ip', '10.6.9.93/32')
+            ->assertJsonPath('data.hostname', 'omer_cicek')
+            ->assertJsonPath('data.user', 'omer.cicek')
+            ->assertJsonPath('data.macCount', 1);
+    }
+
     public function test_switch_port_rediscovery_endpoint_dispatches_full_switch_job(): void
     {
         $this->seed(NacDemoSeeder::class);

@@ -178,7 +178,7 @@ class SwitchStatsService
         $location = $port->currentLocation;
         $endpoint = $location?->endpoint;
         $goPort = $this->goPortForLocalPort($port, $goPorts);
-        $goDevice = $this->goDeviceForLocalPort($port, $goDevices);
+        $goDevice = $this->goDeviceForLocalPort($port, $goDevices, $goPort);
         $state = $this->portVisualState($port, $endpoint?->status, $goPort, $goDevice);
         $policy = $endpoint?->policy_name ?? $this->goDevicePolicyName($goDevice) ?? '-';
         $connected = $endpoint !== null || $goDevice !== null;
@@ -660,11 +660,13 @@ class SwitchStatsService
                 return [];
             }
 
-            $indexed = [];
+            $indexed = ['__all' => []];
             foreach ($devices as $device) {
                 if (! is_array($device)) {
                     continue;
                 }
+
+                $indexed['__all'][] = $device;
 
                 foreach ($this->goDeviceCandidates($device) as $candidate) {
                     if ($candidate === '') {
@@ -692,36 +694,96 @@ class SwitchStatsService
         return null;
     }
 
-    protected function goDeviceForLocalPort(SwitchPort $port, array $goDevices): ?array
+    protected function goDeviceForLocalPort(SwitchPort $port, array $goDevices, ?array $goPort = null): ?array
     {
         foreach ($this->goPortCandidates((string) $port->port_name, $port->port_index, $port->if_index) as $candidate) {
             if (! isset($goDevices[$candidate]) || ! is_array($goDevices[$candidate])) {
                 continue;
             }
 
-            return collect($goDevices[$candidate])
-                ->sortByDesc(function (array $device) {
-                    $identityScore = trim((string) ($device['identity_full_name'] ?? '')) !== ''
-                        || trim((string) ($device['identity_username'] ?? '')) !== ''
-                        || trim((string) ($device['identity_type'] ?? '')) !== '' ? 100 : 0;
-                    $status = strtolower(trim((string) ($device['status'] ?? '')));
-                    $policy = strtolower(trim((string) ($device['policy_action'] ?? '')));
+            return $this->selectBestGoDevice($goDevices[$candidate]);
+        }
 
-                    $stateScore = match (true) {
-                        $status === 'allowed' || $policy === 'active' => 50,
-                        $status === 'blocked' || $policy === 'blocked' => 10,
-                        $status === 'guest' || $policy === 'guest' => 5,
-                        default => 0,
-                    };
+        $allDevices = $this->flattenGoDevices($goDevices);
+        $portIfIndex = (int) ($port->if_index ?? 0);
 
-                    $lastSeen = strtotime((string) ($device['last_seen_at'] ?? '1970-01-01T00:00:00Z')) ?: 0;
+        if ($portIfIndex > 0) {
+            $matchedByIfIndex = array_values(array_filter($allDevices, function (array $device) use ($portIfIndex) {
+                return (int) ($device['current_if_index'] ?? $device['if_index'] ?? 0) === $portIfIndex;
+            }));
 
-                    return ($identityScore * 1000000000000) + ($stateScore * 10000000000) + $lastSeen;
-                })
-                ->first();
+            $bestMatch = $this->selectBestGoDevice($matchedByIfIndex);
+            if ($bestMatch !== null) {
+                return $bestMatch;
+            }
+        }
+
+        $portMac = $this->normalizeMACAddress($this->firstMACAddressFromPort($goPort));
+        if ($portMac !== '') {
+            $matchedByMac = array_values(array_filter($allDevices, function (array $device) use ($portMac) {
+                return $this->normalizeMACAddress((string) ($device['mac_address'] ?? '')) === $portMac;
+            }));
+
+            $bestMatch = $this->selectBestGoDevice($matchedByMac);
+            if ($bestMatch !== null) {
+                return $bestMatch;
+            }
         }
 
         return null;
+    }
+
+    protected function selectBestGoDevice(array $devices): ?array
+    {
+        return collect($devices)
+            ->filter(fn ($device) => is_array($device))
+            ->sortByDesc(function (array $device) {
+                $identityScore = trim((string) ($device['identity_full_name'] ?? '')) !== ''
+                    || trim((string) ($device['identity_username'] ?? '')) !== ''
+                    || trim((string) ($device['identity_type'] ?? '')) !== '' ? 100 : 0;
+                $status = strtolower(trim((string) ($device['status'] ?? '')));
+                $policy = strtolower(trim((string) ($device['policy_action'] ?? '')));
+
+                $stateScore = match (true) {
+                    $status === 'allowed' || $policy === 'active' => 50,
+                    $status === 'blocked' || $policy === 'blocked' => 10,
+                    $status === 'guest' || $policy === 'guest' => 5,
+                    default => 0,
+                };
+
+                $lastSeen = strtotime((string) ($device['last_seen_at'] ?? '1970-01-01T00:00:00Z')) ?: 0;
+
+                return ($identityScore * 1000000000000) + ($stateScore * 10000000000) + $lastSeen;
+            })
+            ->first();
+    }
+
+    protected function flattenGoDevices(array $goDevices): array
+    {
+        $devices = [];
+        $seen = [];
+
+        foreach ($goDevices as $bucket) {
+            if (! is_array($bucket)) {
+                continue;
+            }
+
+            foreach ($bucket as $device) {
+                if (! is_array($device)) {
+                    continue;
+                }
+
+                $deviceKey = (string) ($device['id'] ?? md5(json_encode($device)));
+                if (isset($seen[$deviceKey])) {
+                    continue;
+                }
+
+                $seen[$deviceKey] = true;
+                $devices[] = $device;
+            }
+        }
+
+        return $devices;
     }
 
     protected function goDeviceUserLabel(?array $device): ?string
@@ -816,6 +878,16 @@ class SwitchStatsService
         }
 
         return null;
+    }
+
+    protected function normalizeMACAddress(?string $mac): string
+    {
+        $normalized = strtolower(trim((string) $mac));
+        if ($normalized === '') {
+            return '';
+        }
+
+        return preg_replace('/[^a-f0-9]/', '', $normalized) ?? '';
     }
 
     protected function effectivePortVlan(SwitchPort $port, ?int $locationVlan, ?array $goPort, ?array $goDevice): int
@@ -1409,3 +1481,4 @@ class SwitchStatsService
         ];
     }
 }
+
