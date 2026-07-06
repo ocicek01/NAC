@@ -55,6 +55,7 @@ return [
         'default_allow_vlan' => env('NAC_DEFAULT_ALLOW_VLAN', 106),
         'guest_vlan' => env('NAC_GUEST_VLAN', 300),
         'quarantine_vlan' => env('NAC_QUARANTINE_VLAN', 333),
+        'port_status_source_lock_seconds' => env('NAC_PORT_STATUS_SOURCE_LOCK_SECONDS', 90),
     ],
 
 ];

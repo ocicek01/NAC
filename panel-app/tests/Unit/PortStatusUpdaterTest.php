@@ -8,6 +8,7 @@ use App\Models\SwitchPort;
 use App\Models\Zone;
 use App\Services\PortStatusUpdater;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Tests\TestCase;
 
@@ -39,6 +40,49 @@ class PortStatusUpdaterTest extends TestCase
         $this->assertSame('port_status_changed', $events[0]['type']);
         $this->assertSame('down', $events[0]['old_oper_status']);
         $this->assertSame('up', $events[0]['new_oper_status']);
+    }
+
+    public function test_recent_snmp_trap_beats_conflicting_snmp_poll(): void
+    {
+        config(['cache.default' => 'array']);
+        config(['services.nac.port_status_source_lock_seconds' => 90]);
+        Cache::flush();
+
+        $switch = $this->makeSwitch();
+        $service = $this->app->make(PortStatusUpdater::class);
+        $trapSeenAt = Carbon::parse('2026-07-06T13:00:00+03:00');
+        $pollSeenAt = $trapSeenAt->copy()->addSeconds(15);
+
+        $trapped = $service->updatePortStatus($switch, 32, '32', 'Port 32', 'down', 'down', '1 Gbps', 'snmp_trap', ['trap_type' => 'linkDown'], $trapSeenAt);
+        $polled = $service->updatePortStatus($switch, 32, '32', 'Port 32', 'up', 'up', '1 Gbps', 'snmp_poll', ['oper_status' => 'up'], $pollSeenAt);
+
+        $this->assertSame($trapped->id, $polled->id);
+        $this->assertSame('down', $polled->admin_status);
+        $this->assertSame('down', $polled->oper_status);
+        $this->assertSame('snmp_trap', $polled->status_source);
+        $this->assertSame($pollSeenAt->copy()->utc()->toIso8601String(), $polled->last_seen?->toIso8601String());
+        $this->assertSame('snmp_poll', data_get($polled->raw_status, 'deferred_update.source'));
+        $this->assertSame(0, NacAuditLog::query()->where('action', 'switch_port_status_changed')->count());
+    }
+
+    public function test_snmp_poll_can_update_after_lock_window_expires(): void
+    {
+        config(['cache.default' => 'array']);
+        config(['services.nac.port_status_source_lock_seconds' => 30]);
+        Cache::flush();
+
+        $switch = $this->makeSwitch();
+        $service = $this->app->make(PortStatusUpdater::class);
+        $trapSeenAt = Carbon::parse('2026-07-06T13:00:00+03:00');
+        $pollSeenAt = $trapSeenAt->copy()->addSeconds(45);
+
+        $service->updatePortStatus($switch, 32, '32', 'Port 32', 'down', 'down', '1 Gbps', 'snmp_trap', ['trap_type' => 'linkDown'], $trapSeenAt);
+        $polled = $service->updatePortStatus($switch, 32, '32', 'Port 32', 'up', 'up', '1 Gbps', 'snmp_poll', ['oper_status' => 'up'], $pollSeenAt);
+
+        $this->assertSame('up', $polled->admin_status);
+        $this->assertSame('up', $polled->oper_status);
+        $this->assertSame('snmp_poll', $polled->status_source);
+        $this->assertSame(1, NacAuditLog::query()->where('action', 'switch_port_status_changed')->count());
     }
 
     public function test_it_generates_unique_port_index_for_fo_interfaces(): void
@@ -91,3 +135,4 @@ class PortStatusUpdaterTest extends TestCase
         ]);
     }
 }
+

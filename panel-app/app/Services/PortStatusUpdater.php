@@ -29,6 +29,7 @@ class PortStatusUpdater
         ?Carbon $seenAt = null,
     ): SwitchPort {
         $seenAt ??= now();
+        $seenAt = $seenAt->copy()->utc();
         $portName = $ifName ?: (string) $ifIndex;
         $portDescription = $ifDescr;
         $computedPortIndex = $this->extractPortIndex($portName, $portDescription ?: '', $ifIndex);
@@ -44,8 +45,16 @@ class PortStatusUpdater
 
         $previousAdmin = (string) ($port->admin_status ?? 'unknown');
         $previousOper = (string) ($port->oper_status ?? 'unknown');
+        [$effectiveAdminStatus, $effectiveOperStatus, $effectiveSource, $effectiveRawStatus] = $this->resolveEffectiveUpdate(
+            $port,
+            $adminStatus,
+            $operStatus,
+            $source,
+            $rawStatus,
+            $seenAt,
+        );
         $statusChanged = $port->exists
-            && ($previousAdmin !== $adminStatus || $previousOper !== $operStatus);
+            && ($previousAdmin !== $effectiveAdminStatus || $previousOper !== $effectiveOperStatus);
 
         $lastChange = $statusChanged || ! $port->exists
             ? $seenAt
@@ -63,12 +72,12 @@ class PortStatusUpdater
             'port_index' => $portIndex,
             'port_name' => $portName,
             'port_description' => $portDescription,
-            'status' => $this->mapLegacyStatus($adminStatus, $operStatus),
-            'admin_status' => $adminStatus,
-            'oper_status' => $operStatus,
+            'status' => $this->mapLegacyStatus($effectiveAdminStatus, $effectiveOperStatus),
+            'admin_status' => $effectiveAdminStatus,
+            'oper_status' => $effectiveOperStatus,
             'speed' => $speed ?: ($port->speed ?: '0'),
-            'status_source' => $source,
-            'raw_status' => $rawStatus,
+            'status_source' => $effectiveSource,
+            'raw_status' => $effectiveRawStatus,
             'last_seen' => $seenAt,
             'last_change' => $lastChange,
             'last_change_at' => $lastChange,
@@ -87,12 +96,12 @@ class PortStatusUpdater
                 'if_index' => $ifIndex,
                 'if_name' => $port->if_name ?: $port->port_name,
                 'old_oper_status' => $previousOper,
-                'new_oper_status' => $operStatus,
+                'new_oper_status' => $effectiveOperStatus,
                 'old_admin_status' => $previousAdmin,
-                'admin_status' => $adminStatus,
+                'admin_status' => $effectiveAdminStatus,
                 'changed_at' => $lastChange->toIso8601String(),
                 'last_seen' => $seenAt->toIso8601String(),
-                'source' => $source,
+                'source' => $effectiveSource,
             ];
 
             $this->auditLogService->log('switch_port_status_changed', 'switch_port', $port->id, [
@@ -103,24 +112,106 @@ class PortStatusUpdater
                     'oper_status' => $previousOper,
                 ],
                 'new_value' => [
-                    'admin_status' => $adminStatus,
-                    'oper_status' => $operStatus,
-                    'source' => $source,
-                    'message' => sprintf('Port %s changed from %s to %s on switch %s', $port->port_name, $previousOper, $operStatus, $switch->hostname),
+                    'admin_status' => $effectiveAdminStatus,
+                    'oper_status' => $effectiveOperStatus,
+                    'source' => $effectiveSource,
+                    'message' => sprintf('Port %s changed from %s to %s on switch %s', $port->port_name, $previousOper, $effectiveOperStatus, $switch->hostname),
                 ],
             ]);
 
-            Log::info(sprintf('Port %s changed from %s to %s on switch %s', $port->port_name, $previousOper, $operStatus, $switch->hostname), [
+            Log::info(sprintf('Port %s changed from %s to %s on switch %s', $port->port_name, $previousOper, $effectiveOperStatus, $switch->hostname), [
                 'switch_id' => $switch->id,
                 'switch_port_id' => $port->id,
                 'if_index' => $ifIndex,
-                'source' => $source,
+                'source' => $effectiveSource,
             ]);
 
             $this->pushEvent($event);
         }
 
         return $port;
+    }
+
+    protected function resolveEffectiveUpdate(
+        SwitchPort $port,
+        string $adminStatus,
+        string $operStatus,
+        string $source,
+        ?array $rawStatus,
+        Carbon $seenAt,
+    ): array {
+        if (! $port->exists) {
+            return [$adminStatus, $operStatus, $source, $rawStatus];
+        }
+
+        $currentSource = strtolower(trim((string) ($port->status_source ?? '')));
+        $incomingSource = strtolower(trim($source));
+        if ($currentSource === '' || $incomingSource === '' || $currentSource === $incomingSource) {
+            return [$adminStatus, $operStatus, $source, $rawStatus];
+        }
+
+        if ($this->sourcePriority($incomingSource) >= $this->sourcePriority($currentSource)) {
+            return [$adminStatus, $operStatus, $source, $rawStatus];
+        }
+
+        if (! $this->isRecentHigherPriorityUpdate($port, $seenAt)) {
+            return [$adminStatus, $operStatus, $source, $rawStatus];
+        }
+
+        if ((string) ($port->admin_status ?? 'unknown') === $adminStatus && (string) ($port->oper_status ?? 'unknown') === $operStatus) {
+            return [$adminStatus, $operStatus, $source, $rawStatus];
+        }
+
+        $preservedRawStatus = is_array($port->raw_status) ? $port->raw_status : [];
+        $preservedRawStatus['deferred_update'] = [
+            'source' => $source,
+            'admin_status' => $adminStatus,
+            'oper_status' => $operStatus,
+            'seen_at' => $seenAt->toIso8601String(),
+            'raw_status' => $rawStatus,
+        ];
+
+        Log::info('Deferred lower-priority port status update', [
+            'switch_port_id' => $port->id,
+            'current_source' => $currentSource,
+            'incoming_source' => $incomingSource,
+            'current_admin_status' => $port->admin_status,
+            'incoming_admin_status' => $adminStatus,
+            'current_oper_status' => $port->oper_status,
+            'incoming_oper_status' => $operStatus,
+        ]);
+
+        return [
+            (string) ($port->admin_status ?? 'unknown'),
+            (string) ($port->oper_status ?? 'unknown'),
+            (string) ($port->status_source ?? $currentSource),
+            $preservedRawStatus,
+        ];
+    }
+
+    protected function sourcePriority(string $source): int
+    {
+        return match (strtolower(trim($source))) {
+            'manual' => 300,
+            'snmp_trap' => 200,
+            'snmp_poll' => 100,
+            default => 0,
+        };
+    }
+
+    protected function isRecentHigherPriorityUpdate(SwitchPort $port, Carbon $seenAt): bool
+    {
+        $referenceAt = $port->last_change ?? $port->last_change_at ?? $port->last_seen;
+        if (! $referenceAt instanceof Carbon) {
+            return false;
+        }
+
+        $windowSeconds = max(0, (int) config('services.nac.port_status_source_lock_seconds', 90));
+        if ($windowSeconds === 0) {
+            return false;
+        }
+
+        return $referenceAt->copy()->addSeconds($windowSeconds)->greaterThan($seenAt);
     }
 
     protected function mapLegacyStatus(string $adminStatus, string $operStatus): string
@@ -245,3 +336,4 @@ class PortStatusUpdater
         return $offset === null ? $events : array_slice($events, $offset + 1);
     }
 }
+
