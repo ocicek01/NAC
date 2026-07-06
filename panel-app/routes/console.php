@@ -26,7 +26,10 @@ Artisan::command('nac:discover-ports {switchId?} {--zone=} {--hostname=}', funct
     SnmpPortDiscoveryService $discoveryService
 ) {
     $switchId = $this->argument('switchId');
-    $query = NetworkSwitch::query()->orderBy('hostname');
+    $query = NetworkSwitch::query()
+        ->where('managed', true)
+        ->whereNotNull('snmp_community')
+        ->orderBy('hostname');
 
     if ($switchId !== null) {
         $query->whereKey($switchId);
@@ -92,3 +95,11 @@ Artisan::command('nac:poll-port-status {switchId?} {--hostname=}', function (Snm
 Schedule::command('nac:poll-port-status')
     ->everyThirtySeconds()
     ->withoutOverlapping();
+
+if ((bool) config('services.nac.discovery_schedule_enabled', true)) {
+    $discoveryFrequencyMinutes = max(1, (int) config('services.nac.discovery_schedule_minutes', 10));
+
+    Schedule::command('nac:discover-ports')
+        ->cron('*/'.$discoveryFrequencyMinutes.' * * * *')
+        ->withoutOverlapping();
+}
