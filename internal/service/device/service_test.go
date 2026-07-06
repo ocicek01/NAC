@@ -8,7 +8,9 @@ import (
 	"time"
 
 	devicedomain "nac/internal/domain/device"
+	macipbindingdomain "nac/internal/domain/macipbinding"
 	portendpointdomain "nac/internal/domain/portendpoint"
+	sessiondomain "nac/internal/domain/session"
 	switchportdomain "nac/internal/domain/switchport"
 )
 
@@ -41,7 +43,7 @@ func TestListBySwitchAndIfIndexFallsBackToObservedPortData(t *testing.T) {
 		},
 	}
 
-	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, switchPorts, portEndpoints, 0, 0, 0, false, false, 0, 0, 0, false, 0)
+	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, switchPorts, portEndpoints, nil, nil, 0, 0, 0, false, false, 0, 0, 0, false, 0)
 
 	devices, err := service.ListBySwitchAndIfIndex(context.Background(), "sw-1", 32)
 	if err != nil {
@@ -64,6 +66,64 @@ func TestListBySwitchAndIfIndexFallsBackToObservedPortData(t *testing.T) {
 	}
 }
 
+func TestListBySwitchAndIfIndexFallsBackToRadiusSessionAndBindingData(t *testing.T) {
+	repo := &stubDeviceRepository{}
+	switchPorts := &stubSwitchPortResolver{
+		byIfIndex: map[int]switchportdomain.Port{
+			32: {
+				SwitchID:             "sw-1",
+				IfIndex:              32,
+				InterfaceName:        "32",
+				InterfaceDescription: "32",
+				MACAddresses:         []string{"30:9C:23:9B:97:AA"},
+				UpdatedAt:            time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC),
+			},
+		},
+	}
+	sessions := &stubSessionResolver{
+		byMAC: map[string]*sessiondomain.Session{
+			"30:9C:23:9B:97:AA|sw-1": {
+				MACAddress:   "30:9C:23:9B:97:AA",
+				SwitchID:     "sw-1",
+				SwitchName:   "sw-1-name",
+				ManagementIP: "10.6.8.19",
+				IPAddress:    "10.6.8.10",
+				Hostname:     "pc-32",
+				Username:     "ocicek",
+				LastSeenAt:   time.Date(2026, 7, 6, 12, 6, 0, 0, time.UTC),
+			},
+		},
+	}
+	bindings := &stubMACIPBindingResolver{
+		byMAC: map[string]*macipbindingdomain.Binding{
+			"30:9C:23:9B:97:AA|sw-1": {
+				MACAddress: "30:9C:23:9B:97:AA",
+				SwitchID:   "sw-1",
+				IPAddress:  "10.6.8.10",
+				Hostname:   "pc-32",
+			},
+		},
+	}
+
+	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, switchPorts, nil, sessions, bindings, 0, 0, 0, false, false, 0, 0, 0, false, 0)
+
+	devices, err := service.ListBySwitchAndIfIndex(context.Background(), "sw-1", 32)
+	if err != nil {
+		t.Fatalf("ListBySwitchAndIfIndex returned error: %v", err)
+	}
+	if len(devices) != 1 {
+		t.Fatalf("expected 1 device, got %d", len(devices))
+	}
+	if devices[0].CurrentIPAddress != "10.6.8.10" {
+		t.Fatalf("expected IP from fallback sources, got %q", devices[0].CurrentIPAddress)
+	}
+	if devices[0].Hostname != "pc-32" {
+		t.Fatalf("expected hostname from fallback sources, got %q", devices[0].Hostname)
+	}
+	if devices[0].IdentityUsername != "ocicek" {
+		t.Fatalf("expected username from radius session, got %q", devices[0].IdentityUsername)
+	}
+}
 func TestListBySwitchKeepsRealInventoryAndAppendsObservedFallbacks(t *testing.T) {
 	repo := &stubDeviceRepository{
 		bySwitch: []devicedomain.Device{
@@ -84,7 +144,7 @@ func TestListBySwitchKeepsRealInventoryAndAppendsObservedFallbacks(t *testing.T)
 	}
 	portEndpoints := &stubPortEndpointResolver{}
 
-	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, switchPorts, portEndpoints, 0, 0, 0, false, false, 0, 0, 0, false, 0)
+	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, switchPorts, portEndpoints, nil, nil, 0, 0, 0, false, false, 0, 0, 0, false, 0)
 
 	devices, err := service.ListBySwitch(context.Background(), "sw-1")
 	if err != nil {
@@ -161,4 +221,30 @@ type stubPortEndpointResolver struct {
 
 func (s *stubPortEndpointResolver) ListBySwitch(ctx context.Context, switchID string) ([]portendpointdomain.Endpoint, error) {
 	return append([]portendpointdomain.Endpoint{}, s.items...), nil
+}
+
+type stubSessionResolver struct {
+	byMAC map[string]*sessiondomain.Session
+}
+
+func (s *stubSessionResolver) FindLatestActiveByMACSwitch(ctx context.Context, macAddress, switchID string) (*sessiondomain.Session, error) {
+	item, ok := s.byMAC[macAddress+"|"+switchID]
+	if !ok {
+		return nil, nil
+	}
+	copyItem := *item
+	return &copyItem, nil
+}
+
+type stubMACIPBindingResolver struct {
+	byMAC map[string]*macipbindingdomain.Binding
+}
+
+func (s *stubMACIPBindingResolver) FindLatestByMACSwitch(ctx context.Context, macAddress, switchID string) (*macipbindingdomain.Binding, error) {
+	item, ok := s.byMAC[macAddress+"|"+switchID]
+	if !ok {
+		return nil, nil
+	}
+	copyItem := *item
+	return &copyItem, nil
 }

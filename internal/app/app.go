@@ -134,6 +134,8 @@ func New(ctx context.Context) (*App, error) {
 		enforcementEngineService,
 		switchPortRepository,
 		portEndpointRepository,
+		radiusSessionRepository,
+		macIPBindingRepository,
 		parseVLANID(cfg.Radius.RegistrationVLAN),
 		parseVLANID(cfg.Radius.GuestVLAN),
 		parseVLANID(cfg.Radius.QuarantineVLAN),

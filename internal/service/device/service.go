@@ -15,8 +15,10 @@ import (
 	domain "nac/internal/domain/device"
 	dhcpevent "nac/internal/domain/dhcpevent"
 	enforcementdomain "nac/internal/domain/enforcement"
+	macipbindingdomain "nac/internal/domain/macipbinding"
 	macobservation "nac/internal/domain/macobservation"
 	portendpointdomain "nac/internal/domain/portendpoint"
+	sessiondomain "nac/internal/domain/session"
 	switchportdomain "nac/internal/domain/switchport"
 	"nac/internal/normalize"
 	enforcementservice "nac/internal/service/enforcement"
@@ -57,6 +59,14 @@ type PortEndpointResolver interface {
 	ListBySwitch(ctx context.Context, switchID string) ([]portendpointdomain.Endpoint, error)
 }
 
+type SessionResolver interface {
+	FindLatestActiveByMACSwitch(ctx context.Context, macAddress, switchID string) (*sessiondomain.Session, error)
+}
+
+type MACIPBindingResolver interface {
+	FindLatestByMACSwitch(ctx context.Context, macAddress, switchID string) (*macipbindingdomain.Binding, error)
+}
+
 type Service struct {
 	repository           domain.Repository
 	policies             PolicyEvaluator
@@ -64,6 +74,8 @@ type Service struct {
 	logger               *slog.Logger
 	switchPorts          SwitchPortResolver
 	portEndpoints        PortEndpointResolver
+	sessions             SessionResolver
+	macIPBindings        MACIPBindingResolver
 	registrationVLAN     int
 	guestVLAN            int
 	quarantineVLAN       int
@@ -100,7 +112,7 @@ type RadiusInventoryInput struct {
 	PolicyReasonOverride string
 }
 
-func NewService(logger *slog.Logger, repository domain.Repository, policies PolicyEvaluator, enforcement EnforcementRecorder, switchPorts SwitchPortResolver, portEndpoints PortEndpointResolver, registrationVLAN, guestVLAN, quarantineVLAN int, autoExecute bool, ipLearningEnabled bool, ipLearningWait, ipRecheck, portBounceDelay time.Duration, portBounceEnabled bool, maxMACCountForBounce int) *Service {
+func NewService(logger *slog.Logger, repository domain.Repository, policies PolicyEvaluator, enforcement EnforcementRecorder, switchPorts SwitchPortResolver, portEndpoints PortEndpointResolver, sessions SessionResolver, macIPBindings MACIPBindingResolver, registrationVLAN, guestVLAN, quarantineVLAN int, autoExecute bool, ipLearningEnabled bool, ipLearningWait, ipRecheck, portBounceDelay time.Duration, portBounceEnabled bool, maxMACCountForBounce int) *Service {
 	return &Service{
 		repository:           repository,
 		policies:             policies,
@@ -108,6 +120,8 @@ func NewService(logger *slog.Logger, repository domain.Repository, policies Poli
 		logger:               logger,
 		switchPorts:          switchPorts,
 		portEndpoints:        portEndpoints,
+		sessions:             sessions,
+		macIPBindings:        macIPBindings,
 		registrationVLAN:     registrationVLAN,
 		guestVLAN:            guestVLAN,
 		quarantineVLAN:       quarantineVLAN,
@@ -225,7 +239,7 @@ func (s *Service) mergeObservedPortDevices(ctx context.Context, switchID string,
 			if item, ok := endpointByKey[key]; ok {
 				endpoint = &item
 			}
-			merged = append(merged, s.syntheticObservedDevice(switchID, port, endpoint, mac))
+			merged = append(merged, s.syntheticObservedDevice(ctx, switchID, port, endpoint, mac))
 			existing[key] = struct{}{}
 			existing[mac] = struct{}{}
 		}
@@ -234,7 +248,7 @@ func (s *Service) mergeObservedPortDevices(ctx context.Context, switchID string,
 	return merged, nil
 }
 
-func (s *Service) syntheticObservedDevice(switchID string, port switchportdomain.Port, endpoint *portendpointdomain.Endpoint, macAddress string) domain.Device {
+func (s *Service) syntheticObservedDevice(ctx context.Context, switchID string, port switchportdomain.Port, endpoint *portendpointdomain.Endpoint, macAddress string) domain.Device {
 	now := time.Now().UTC()
 	device := domain.Device{
 		ID:                          s.syntheticObservedDeviceKey(switchID, port.IfIndex, macAddress),
@@ -260,6 +274,8 @@ func (s *Service) syntheticObservedDevice(switchID string, port switchportdomain
 		device.UpdatedAt = port.UpdatedAt
 	}
 
+	s.enrichSyntheticObservedDevice(ctx, &device, switchID, endpoint, macAddress)
+
 	if endpoint != nil {
 		device.CurrentIPAddress = strings.TrimSpace(endpoint.IPAddress)
 		device.Hostname = strings.TrimSpace(endpoint.Hostname)
@@ -280,6 +296,67 @@ func (s *Service) syntheticObservedDevice(switchID string, port switchportdomain
 	return device
 }
 
+func (s *Service) enrichSyntheticObservedDevice(ctx context.Context, device *domain.Device, switchID string, endpoint *portendpointdomain.Endpoint, macAddress string) {
+	if device == nil {
+		return
+	}
+
+	if endpoint != nil {
+		if device.CurrentIPAddress == "" {
+			device.CurrentIPAddress = strings.TrimSpace(endpoint.IPAddress)
+		}
+		if device.Hostname == "" {
+			device.Hostname = strings.TrimSpace(endpoint.Hostname)
+		}
+	}
+
+	if s.sessions != nil {
+		session, err := s.sessions.FindLatestActiveByMACSwitch(ctx, macAddress, switchID)
+		if err == nil && session != nil {
+			if device.CurrentIPAddress == "" {
+				device.CurrentIPAddress = strings.TrimSpace(session.IPAddress)
+			}
+			if device.Hostname == "" {
+				device.Hostname = strings.TrimSpace(session.Hostname)
+			}
+			if device.IdentityUsername == "" {
+				device.IdentityUsername = strings.TrimSpace(session.Username)
+			}
+			if device.CurrentSwitchName == "" {
+				device.CurrentSwitchName = strings.TrimSpace(session.SwitchName)
+			}
+			if device.CurrentManagementIP == "" {
+				device.CurrentManagementIP = strings.TrimSpace(session.ManagementIP)
+			}
+			if !session.LastSeenAt.IsZero() && session.LastSeenAt.After(device.LastSeenAt) {
+				device.LastSeenAt = session.LastSeenAt
+				device.UpdatedAt = session.LastSeenAt
+			}
+			if endpoint == nil {
+				device.CurrentSourceType = "radius_session"
+			}
+		}
+	}
+
+	if s.macIPBindings != nil && (device.CurrentIPAddress == "" || device.Hostname == "") {
+		binding, err := s.macIPBindings.FindLatestByMACSwitch(ctx, macAddress, switchID)
+		if err == nil && binding != nil {
+			if device.CurrentIPAddress == "" {
+				device.CurrentIPAddress = strings.TrimSpace(binding.IPAddress)
+			}
+			if device.Hostname == "" {
+				device.Hostname = strings.TrimSpace(binding.Hostname)
+			}
+			if !binding.LastSeenAt.IsZero() && binding.LastSeenAt.After(device.LastSeenAt) {
+				device.LastSeenAt = binding.LastSeenAt
+				device.UpdatedAt = binding.LastSeenAt
+			}
+			if endpoint == nil && device.CurrentSourceType == "switch_port" {
+				device.CurrentSourceType = "mac_ip_binding"
+			}
+		}
+	}
+}
 func (s *Service) syntheticObservedDeviceKey(switchID string, ifIndex int, macAddress string) string {
 	return fmt.Sprintf("observed:%s:%d:%s", strings.TrimSpace(switchID), ifIndex, strings.ToLower(strings.TrimSpace(macAddress)))
 }

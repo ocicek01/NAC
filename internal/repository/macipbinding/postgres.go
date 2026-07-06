@@ -64,3 +64,51 @@ func (r *PostgresRepository) UpsertBatch(ctx context.Context, bindings []domain.
 
 	return nil
 }
+
+func (r *PostgresRepository) FindLatestByMACSwitch(ctx context.Context, macAddress, switchID string) (*domain.Binding, error) {
+	query := `
+		SELECT
+			id,
+			COALESCE(switch_id::text, ''),
+			COALESCE(mac_address, ''),
+			COALESCE(HOST(ip_address), ''),
+			COALESCE(source, ''),
+			COALESCE(hostname, ''),
+			COALESCE(vendor_class, ''),
+			COALESCE(options55, ''),
+			COALESCE(vlan_id, 0),
+			COALESCE(first_seen_at, '0001-01-01T00:00:00Z'::timestamptz),
+			COALESCE(last_seen_at, '0001-01-01T00:00:00Z'::timestamptz),
+			created_at,
+			updated_at
+		FROM mac_ip_bindings
+		WHERE UPPER(mac_address) = UPPER($1)
+		  AND switch_id = NULLIF($2, '')::uuid
+		ORDER BY last_seen_at DESC NULLS LAST, updated_at DESC
+		LIMIT 1
+	`
+
+	var item domain.Binding
+	if err := r.pool.QueryRow(ctx, query, strings.TrimSpace(macAddress), strings.TrimSpace(switchID)).Scan(
+		&item.ID,
+		&item.SwitchID,
+		&item.MACAddress,
+		&item.IPAddress,
+		&item.Source,
+		&item.Hostname,
+		&item.VendorClass,
+		&item.Options55,
+		&item.VLANID,
+		&item.FirstSeenAt,
+		&item.LastSeenAt,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	); err != nil {
+		if strings.Contains(err.Error(), "no rows in result set") {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	return &item, nil
+}
