@@ -38,3 +38,34 @@ curl -i -X POST http://127.0.0.1/api/traps/snmp
 
 Do not test these Laravel endpoints against `127.0.0.1:8080`; that target is
 the legacy backend and will return `404 page not found` for the new NAC routes.
+
+## UDP trap listener
+
+The project now includes a native UDP SNMP trap listener command for direct
+switch trap reception without going through the HTTP trap endpoint first.
+
+Default listener settings:
+
+- `NAC_TRAP_LISTENER_ENABLED=true`
+- `NAC_TRAP_LISTENER_HOST=0.0.0.0`
+- `NAC_TRAP_LISTENER_PORT=9162`
+- `NAC_TRAP_LISTENER_BUFFER_BYTES=65535`
+- `NAC_TRAP_VALIDATE_COMMUNITY=false`
+
+Run it manually:
+
+```bash
+cd /opt/nac/panel-app
+php artisan nac:listen-snmp-traps --port=9162
+```
+
+For a single test packet workflow:
+
+```bash
+cd /opt/nac/panel-app
+php artisan nac:listen-snmp-traps --port=9162 --max-packets=1
+```
+
+The listener currently supports SNMP v1/v2c trap packets and feeds the decoded
+interface data into the existing `SnmpTrapIngestService` and `PortStatusUpdater`
+flow with `source=snmp_trap`.

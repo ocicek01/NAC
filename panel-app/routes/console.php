@@ -3,6 +3,7 @@
 use App\Models\NetworkSwitch;
 use App\Services\SnmpPortDiscoveryService;
 use App\Services\SnmpPortStatusPollingService;
+use App\Services\SnmpTrapListenerService;
 use App\Services\SwitchInventoryImportService;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
@@ -91,6 +92,36 @@ Artisan::command('nac:poll-port-status {switchId?} {--hostname=}', function (Snm
 
     return 0;
 })->purpose('Poll live switch port status over SNMP and update switch_ports');
+
+Artisan::command('nac:listen-snmp-traps {--host=} {--port=} {--max-packets=}', function (SnmpTrapListenerService $listenerService) {
+    $host = $this->option('host') ?: null;
+    $port = $this->option('port') !== null ? (int) $this->option('port') : null;
+    $maxPackets = $this->option('max-packets') !== null ? (int) $this->option('max-packets') : null;
+
+    $displayHost = $host ?: (string) config('services.nac.trap_listener_host', '0.0.0.0');
+    $displayPort = $port ?: (int) config('services.nac.trap_listener_port', 9162);
+    $this->info("SNMP trap listener basliyor: {$displayHost}:{$displayPort}");
+
+    $listenerService->listen($host, $port, $maxPackets, function (array $result) {
+        if ($result['ok']) {
+            $ingest = $result['result'];
+            $this->info(sprintf(
+                '%s => %s ifIndex %d %s/%s',
+                $result['remote_ip'] ?? '-',
+                $ingest['switch_hostname'] ?? ('switch#'.$ingest['switch_id']),
+                (int) ($ingest['if_index'] ?? 0),
+                $ingest['admin_status'] ?? 'unknown',
+                $ingest['oper_status'] ?? 'unknown'
+            ));
+
+            return;
+        }
+
+        $this->warn(sprintf('%s => %s', $result['remote_ip'] ?? '-', $result['error'] ?? 'Trap islenemedi.'));
+    });
+
+    return 0;
+})->purpose('Listen for SNMP traps over UDP and update switch_ports');
 
 Schedule::command('nac:poll-port-status')
     ->everyThirtySeconds()
