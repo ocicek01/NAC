@@ -13,6 +13,47 @@ class SwitchDetailPortStatusViewTest extends TestCase
 {
     use RefreshDatabase;
 
+
+    public function test_switch_detail_shows_polling_health_context_for_warning_switch(): void
+    {
+        config()->set('services.nac.switch_detail_remote_enrichment', false);
+
+        $this->mock(NacApiClient::class, function ($mock): void {
+            $mock->shouldNotReceive('resolveSwitch');
+            $mock->shouldNotReceive('switches');
+            $mock->shouldNotReceive('topologyLinks');
+            $mock->shouldNotReceive('switchPorts');
+            $mock->shouldNotReceive('switchPortSummary');
+            $mock->shouldNotReceive('devicesBySwitch');
+        });
+
+        $zone = Zone::query()->create([
+            'name' => 'Kutuphane',
+            'slug' => 'kutuphane',
+            'status' => 'normal',
+        ]);
+
+        $switch = NetworkSwitch::query()->create([
+            'zone_id' => $zone->id,
+            'hostname' => 'SW-WARN-01',
+            'ip_address' => '10.6.8.50',
+            'vendor' => 'HP',
+            'model' => '2530-48G',
+            'status' => 'warning',
+            'managed' => true,
+            'nac_mode' => 'monitor',
+            'port_count' => 48,
+            'consecutive_polling_failures' => 2,
+            'polling_error' => 'SNMP walk basarisiz',
+            'last_polled_at' => now(),
+        ]);
+
+        $this->get('/switches/'.$zone->slug.'/'.strtolower($switch->hostname))
+            ->assertOk()
+            ->assertSee('SNMP polling gecici olarak hata veriyor.')
+            ->assertSee('Ardisik Hata:')
+            ->assertSee('SNMP walk basarisiz');
+    }
     public function test_switch_detail_marks_admin_down_port_with_live_status_class(): void
     {
         config()->set('services.nac.switch_detail_remote_enrichment', false);

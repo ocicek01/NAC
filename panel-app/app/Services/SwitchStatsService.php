@@ -127,6 +127,7 @@ class SwitchStatsService
                 'zoneLabel' => $switch->zone?->name,
                 'status' => $this->switchStatusLabel($switch),
                 'statusClass' => $this->switchStatusClass($switch),
+                'statusDetail' => $this->switchStatusDetail($switch),
                 'nacMode' => $this->nacModeLabel($switch->nac_mode),
                 'vendor' => $switch->vendor,
                 'model' => $switch->model,
@@ -135,6 +136,9 @@ class SwitchStatsService
                 'firmware' => '-',
                 'mac' => '-',
                 'lastSeen' => optional($switch->last_seen_at)->format('d.m.Y H:i:s'),
+                'lastPolledAt' => optional($switch->last_polled_at)->format('d.m.Y H:i:s'),
+                'pollingFailures' => (int) ($switch->consecutive_polling_failures ?? 0),
+                'pollingError' => $switch->polling_error,
                 'uptime' => $this->uptimeLabel($switch),
                 'totalPorts' => $effectivePortCount,
                 'poeBudget' => $poeBudget,
@@ -370,6 +374,16 @@ class SwitchStatsService
             'warning' => 'Uyari',
             'unmanaged' => 'Yonetilmiyor',
             default => 'Online',
+        };
+    }
+
+    protected function switchStatusDetail(NetworkSwitch $switch): string
+    {
+        return match ($this->switchState($switch)) {
+            'offline' => 'SNMP polling basarisiz. Son durum korunuyor.',
+            'warning' => 'SNMP polling gecici olarak hata veriyor.',
+            'unmanaged' => 'Bu switch yonetilmeyen modda.',
+            default => 'SNMP polling aktif ve switch erisilebilir.',
         };
     }
 
@@ -1366,4 +1380,3 @@ class SwitchStatsService
         ];
     }
 }
-

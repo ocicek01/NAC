@@ -260,6 +260,10 @@
         .status-badge.success { background: rgba(65,179,73,.08); color: var(--success); border-color: rgba(65,179,73,.22); }
         .status-badge.warning { background: rgba(255,159,26,.08); color: var(--warning); border-color: rgba(255,159,26,.22); }
         .status-badge.danger { background: rgba(239,68,68,.08); color: var(--danger); border-color: rgba(239,68,68,.22); }
+        .status-meta { margin-top: 8px; color: var(--body); font-size: .86rem; line-height: 1.45; }
+        .status-meta strong { color: var(--heading); }
+        .status-meta.is-danger strong { color: var(--danger); }
+        .status-meta.is-warning strong { color: #a05d08; }
         .switch-heading h1 { margin:0; font-size:1.6rem; font-weight:800; }
         .switch-sub { margin-top:4px; color: var(--body); font-size:.96rem; }
         .switch-sub span + span::before { content:"|"; margin:0 10px; color:#9aa5b5; }
@@ -532,6 +536,13 @@
                             <span>{{ $switchData['vendor'] }} {{ $switchData['model'] }}</span>
                             <span>{{ $switchData['ip'] }}</span>
                             <span>{{ $switchData['zoneLabel'] }}</span>
+                        </div>
+                        <div class="status-meta {{ $switchData['statusClass'] === 'danger' ? 'is-danger' : ($switchData['statusClass'] === 'warning' ? 'is-warning' : '') }}">
+                            <div><strong>Health:</strong> {{ $switchData['statusDetail'] }}</div>
+                            <div><strong>Son Poll:</strong> {{ $switchData['lastPolledAt'] ?: '-' }} | <strong>Ardisik Hata:</strong> {{ $switchData['pollingFailures'] }}</div>
+                            @if(filled($switchData['pollingError']))
+                                <div><strong>Son Hata:</strong> {{ $switchData['pollingError'] }}</div>
+                            @endif
                         </div>
                     </div>
                 </div>
@@ -1882,4 +1893,3 @@
     </script>
 </body>
 </html>
-
