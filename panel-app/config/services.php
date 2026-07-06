@@ -49,7 +49,7 @@ return [
         'trap_ingest_token' => env('NAC_TRAP_INGEST_TOKEN'),
         'trap_listener_enabled' => env('NAC_TRAP_LISTENER_ENABLED', true),
         'trap_listener_host' => env('NAC_TRAP_LISTENER_HOST', '0.0.0.0'),
-        'trap_listener_port' => env('NAC_TRAP_LISTENER_PORT', 9162),
+        'trap_listener_port' => env('NAC_TRAP_LISTENER_PORT', 162),
         'trap_listener_buffer_bytes' => env('NAC_TRAP_LISTENER_BUFFER_BYTES', 65535),
         'trap_validate_community' => env('NAC_TRAP_VALIDATE_COMMUNITY', false),
         'default_allow_vlan' => env('NAC_DEFAULT_ALLOW_VLAN', 106),
@@ -58,3 +58,4 @@ return [
     ],
 
 ];
+
