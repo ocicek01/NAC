@@ -22,6 +22,7 @@ type Service struct {
 	switches   switchResolver
 	ports      portResolver
 	windows    trapWindowRecorder
+	forwarder  portStatusForwarder
 	logger     *slog.Logger
 }
 
@@ -38,12 +39,17 @@ type trapWindowRecorder interface {
 	Record(ctx context.Context, window trapwindowdomain.Window) (trapwindowdomain.Window, error)
 }
 
-func NewService(logger *slog.Logger, repository domain.Repository, switches switchResolver, ports portResolver, windows trapWindowRecorder) *Service {
+type portStatusForwarder interface {
+	ForwardPortStatus(ctx context.Context, event domain.Event) error
+}
+
+func NewService(logger *slog.Logger, repository domain.Repository, switches switchResolver, ports portResolver, windows trapWindowRecorder, forwarder portStatusForwarder) *Service {
 	return &Service{
 		repository: repository,
 		switches:   switches,
 		ports:      ports,
 		windows:    windows,
+		forwarder:  forwarder,
 		logger:     logger,
 	}
 }
@@ -95,6 +101,9 @@ func (s *Service) Ingest(ctx context.Context, event domain.Event) (domain.Event,
 
 	if err := s.recordActionableWindows(ctx, stored); err != nil && s.logger != nil {
 		s.logger.Warn("snmp trap window record skipped", "error", err, "source_ip", stored.SourceIP, "trap_oid", stored.TrapOID)
+	}
+	if err := s.forwardPortStatus(ctx, stored); err != nil && s.logger != nil {
+		s.logger.Warn("snmp trap port status forward failed", "error", err, "source_ip", stored.SourceIP, "trap_oid", stored.TrapOID, "if_index", stored.IfIndex)
 	}
 
 	return stored, nil
@@ -168,6 +177,19 @@ func (s *Service) recordActionableWindows(ctx context.Context, event domain.Even
 	}
 
 	return nil
+}
+
+func (s *Service) forwardPortStatus(ctx context.Context, event domain.Event) error {
+	if s.forwarder == nil {
+		return nil
+	}
+	if event.IfIndex <= 0 {
+		return nil
+	}
+	if event.Category != "link-up" && event.Category != "link-down" {
+		return nil
+	}
+	return s.forwarder.ForwardPortStatus(ctx, event)
 }
 
 func (s *Service) resolveARPSourceSwitch(ctx context.Context, event domain.Event) string {

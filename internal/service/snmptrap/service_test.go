@@ -50,6 +50,15 @@ func (r *stubTrapWindowRecorder) Record(_ context.Context, window trapwindowdoma
 	return window, nil
 }
 
+type stubPortStatusForwarder struct {
+	forwarded []domain.Event
+}
+
+func (f *stubPortStatusForwarder) ForwardPortStatus(_ context.Context, event domain.Event) error {
+	f.forwarded = append(f.forwarded, event)
+	return nil
+}
+
 func TestIngestClassifiesLinkTrapAndQueuesPortsJob(t *testing.T) {
 	repo := &stubTrapRepository{}
 	windows := &stubTrapWindowRecorder{}
@@ -61,6 +70,7 @@ func TestIngestClassifiesLinkTrapAndQueuesPortsJob(t *testing.T) {
 		}},
 		&stubTrapPortResolver{},
 		windows,
+		nil,
 	)
 
 	event, err := service.Ingest(context.Background(), domain.Event{
@@ -105,6 +115,7 @@ func TestIngestClassifiesHPPortAccessTrapAndQueuesPortsAndARP(t *testing.T) {
 			{IfIndex: 25, IsUplink: true, NeighborSwitchID: "sw-core-1"},
 		}},
 		windows,
+		nil,
 	)
 
 	event, err := service.Ingest(context.Background(), domain.Event{
@@ -151,6 +162,7 @@ func TestIngestUsesWindowKeyForDeduping(t *testing.T) {
 		}},
 		&stubTrapPortResolver{},
 		windows,
+		nil,
 	)
 
 	event, err := service.Ingest(context.Background(), domain.Event{
@@ -169,5 +181,49 @@ func TestIngestUsesWindowKeyForDeduping(t *testing.T) {
 	}
 	if got := buildWindowKey("sw-1", "ports", event); windows.inserted[0].DedupeKey != got {
 		t.Fatalf("expected dedupe key %q, got %q", got, windows.inserted[0].DedupeKey)
+	}
+}
+
+func TestIngestForwardsOnlyLinkTrapPortStatuses(t *testing.T) {
+	repo := &stubTrapRepository{}
+	windows := &stubTrapWindowRecorder{}
+	forwarder := &stubPortStatusForwarder{}
+	service := NewService(
+		slog.Default(),
+		repo,
+		&stubTrapSwitchResolver{byIP: map[string]*switchasset.Switch{
+			"10.6.8.19": {ID: "sw-1", Name: "HP-2530-48G"},
+		}},
+		&stubTrapPortResolver{},
+		windows,
+		forwarder,
+	)
+
+	_, err := service.Ingest(context.Background(), domain.Event{
+		SourceIP: "10.6.8.19",
+		TrapOID:  ".1.3.6.1.6.3.1.1.5.4",
+		VarBinds: []domain.VarBind{{OID: ".1.3.6.1.2.1.2.2.1.1.45", Value: "45"}},
+	})
+	if err != nil {
+		t.Fatalf("Ingest returned error: %v", err)
+	}
+
+	_, err = service.Ingest(context.Background(), domain.Event{
+		SourceIP:      "10.6.8.19",
+		EnterpriseOID: ".1.3.6.1.4.1.11.2.14.11.5.1.19",
+		VarBinds:      []domain.VarBind{{OID: ".1.3.6.1.4.1.11.2.14.11.5.1.19.1.12.0", Value: "10"}},
+	})
+	if err != nil {
+		t.Fatalf("Ingest returned error: %v", err)
+	}
+
+	if len(forwarder.forwarded) != 1 {
+		t.Fatalf("expected only link trap to be forwarded, got %d", len(forwarder.forwarded))
+	}
+	if forwarder.forwarded[0].Category != "link-up" {
+		t.Fatalf("expected forwarded link-up category, got %q", forwarder.forwarded[0].Category)
+	}
+	if forwarder.forwarded[0].IfIndex != 45 {
+		t.Fatalf("expected forwarded ifIndex 45, got %d", forwarder.forwarded[0].IfIndex)
 	}
 }

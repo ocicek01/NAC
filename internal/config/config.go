@@ -53,9 +53,13 @@ type DHCPCollectorConfig struct {
 }
 
 type SNMPTrapConfig struct {
-	Enabled  bool
-	BindHost string
-	Port     int
+	Enabled           bool
+	BindHost          string
+	Port              int
+	ForwardEnabled    bool
+	ForwardURL        string
+	ForwardToken      string
+	ForwardTimeoutSec int
 }
 
 type SNMPConfig struct {
@@ -135,9 +139,13 @@ func Load() (Config, error) {
 			SnapshotLen: getEnvAsInt32("DHCP_SNAPSHOT_LEN", 1600),
 		},
 		SNMPTrap: SNMPTrapConfig{
-			Enabled:  getEnvAsBool("SNMP_TRAP_ENABLED", false),
-			BindHost: getEnv("SNMP_TRAP_BIND_HOST", "0.0.0.0"),
-			Port:     getEnvAsInt("SNMP_TRAP_PORT", 9162),
+			Enabled:           getEnvAsBool("SNMP_TRAP_ENABLED", false),
+			BindHost:          getEnv("SNMP_TRAP_BIND_HOST", "0.0.0.0"),
+			Port:              getEnvAsInt("SNMP_TRAP_PORT", 9162),
+			ForwardEnabled:    getEnvAsBool("SNMP_TRAP_FORWARD_ENABLED", false),
+			ForwardURL:        getEnv("SNMP_TRAP_FORWARD_URL", ""),
+			ForwardToken:      getEnv("SNMP_TRAP_FORWARD_TOKEN", ""),
+			ForwardTimeoutSec: getEnvAsInt("SNMP_TRAP_FORWARD_TIMEOUT_SECONDS", 5),
 		},
 		SNMP: SNMPConfig{
 			Port:               getEnvAsInt("SNMP_PORT", 161),

@@ -158,7 +158,8 @@ func New(ctx context.Context) (*App, error) {
 	)
 	var dhcpEventRepository dhcpdomain.Repository = dhcprepository.NewPostgresRepository(postgresPool)
 	dhcpEventService := dhcpservice.NewService(dhcpEventRepository, switchRepository, macCorrelationService.Handle)
-	snmpTrapService := snmptrapservice.NewService(logger, snmpTrapRepository, switchRepository, switchPortRepository, trapWindowService)
+	trapForwarder := snmptrapservice.NewHTTPPortStatusForwarder(cfg.SNMPTrap.ForwardEnabled, cfg.SNMPTrap.ForwardURL, cfg.SNMPTrap.ForwardToken, time.Duration(cfg.SNMPTrap.ForwardTimeoutSec)*time.Second)
+	snmpTrapService := snmptrapservice.NewService(logger, snmpTrapRepository, switchRepository, switchPortRepository, trapWindowService, trapForwarder)
 
 	server := httpserver.New(cfg.App.Port, logger, dhcpEventService, switchAssetService, portEndpointService, macLookupService, macObservationService, topologyService, discoveryJobService, deviceService, guestIdentityService, portalRegistrationService, radiusSessionService, policyEngineService, enforcementEngineService, radiusService)
 	collector := dhcpcollector.New(cfg.DHCP, logger, dhcpEventService)
