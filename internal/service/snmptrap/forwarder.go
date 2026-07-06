@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,6 +24,8 @@ type trapForwardPayload struct {
 	SourceIP       string           `json:"source_ip,omitempty"`
 	SwitchHostname string           `json:"switch_hostname,omitempty"`
 	IfIndex        int              `json:"if_index"`
+	IfName         string           `json:"if_name,omitempty"`
+	IfDescr        string           `json:"if_descr,omitempty"`
 	AdminStatus    string           `json:"admin_status,omitempty"`
 	OperStatus     string           `json:"oper_status,omitempty"`
 	TrapOID        string           `json:"trap_oid,omitempty"`
@@ -58,12 +61,17 @@ func (f *HTTPPortStatusForwarder) ForwardPortStatus(ctx context.Context, event d
 		SourceIP:       strings.TrimSpace(event.SourceIP),
 		SwitchHostname: strings.TrimSpace(event.SwitchName),
 		IfIndex:        event.IfIndex,
-		AdminStatus:    "unknown",
-		OperStatus:     operStatusFromCategory(event.Category),
+		IfName:         findVarBindValue(event.VarBinds, oidIfDescrPrefix, event.IfIndex),
+		IfDescr:        findVarBindValue(event.VarBinds, oidIfAliasPrefix, event.IfIndex),
+		AdminStatus:    adminStatusFromVarBinds(event.VarBinds, event.IfIndex),
+		OperStatus:     operStatusFromVarBinds(event.Category, event.VarBinds, event.IfIndex),
 		TrapOID:        strings.TrimSpace(event.TrapOID),
 		TrapType:       trapTypeFromCategory(event.Category),
 		OccurredAt:     resolveOccurredAt(event).Format(time.RFC3339),
 		Varbinds:       append([]domain.VarBind{}, event.VarBinds...),
+	}
+	if payload.IfDescr == "" {
+		payload.IfDescr = payload.IfName
 	}
 
 	body, err := json.Marshal(payload)
@@ -94,6 +102,13 @@ func (f *HTTPPortStatusForwarder) ForwardPortStatus(ctx context.Context, event d
 	return nil
 }
 
+func operStatusFromVarBinds(category string, varBinds []domain.VarBind, ifIndex int) string {
+	if value := normalizeStatusValue(findVarBindValue(varBinds, oidIfOperStatusPrefix, ifIndex)); value != "unknown" {
+		return value
+	}
+	return operStatusFromCategory(category)
+}
+
 func operStatusFromCategory(category string) string {
 	switch strings.TrimSpace(category) {
 	case "link-up":
@@ -103,6 +118,34 @@ func operStatusFromCategory(category string) string {
 	default:
 		return "unknown"
 	}
+}
+
+func adminStatusFromVarBinds(varBinds []domain.VarBind, ifIndex int) string {
+	return normalizeStatusValue(findVarBindValue(varBinds, oidIfAdminStatusPrefix, ifIndex))
+}
+
+func normalizeStatusValue(value string) string {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case "1", "up", "enabled", "enable":
+		return "up"
+	case "2", "down", "disabled", "disable", "admin_down":
+		return "down"
+	default:
+		return "unknown"
+	}
+}
+
+func findVarBindValue(varBinds []domain.VarBind, oidPrefix string, ifIndex int) string {
+	if ifIndex <= 0 {
+		return ""
+	}
+	target := strings.TrimSpace(oidPrefix) + "." + strconv.Itoa(ifIndex)
+	for _, item := range varBinds {
+		if strings.TrimSpace(item.OID) == target {
+			return strings.TrimSpace(item.Value)
+		}
+	}
+	return ""
 }
 
 func trapTypeFromCategory(category string) string {
@@ -125,3 +168,10 @@ func resolveOccurredAt(event domain.Event) time.Time {
 	}
 	return time.Now().UTC()
 }
+
+const (
+	oidIfAdminStatusPrefix = ".1.3.6.1.2.1.2.2.1.7"
+	oidIfOperStatusPrefix  = ".1.3.6.1.2.1.2.2.1.8"
+	oidIfDescrPrefix       = ".1.3.6.1.2.1.2.2.1.2"
+	oidIfAliasPrefix       = ".1.3.6.1.2.1.31.1.1.1.18"
+)

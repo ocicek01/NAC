@@ -39,6 +39,10 @@ func TestHTTPPortStatusForwarderPostsNormalizedPayload(t *testing.T) {
 		IfIndex:    45,
 		VarBinds: []domain.VarBind{
 			{OID: ".1.3.6.1.2.1.2.2.1.1.45", Type: "Integer", Value: "45"},
+			{OID: ".1.3.6.1.2.1.2.2.1.7.45", Type: "Integer", Value: "2"},
+			{OID: ".1.3.6.1.2.1.2.2.1.8.45", Type: "Integer", Value: "2"},
+			{OID: ".1.3.6.1.2.1.2.2.1.2.45", Type: "OctetString", Value: "45"},
+			{OID: ".1.3.6.1.2.1.31.1.1.1.18.45", Type: "OctetString", Value: "User port 45"},
 		},
 		ReceivedAt: time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC),
 	})
@@ -61,6 +65,15 @@ func TestHTTPPortStatusForwarderPostsNormalizedPayload(t *testing.T) {
 	if payload.IfIndex != 45 {
 		t.Fatalf("expected if_index 45, got %d", payload.IfIndex)
 	}
+	if payload.IfName != "45" {
+		t.Fatalf("expected if_name 45, got %q", payload.IfName)
+	}
+	if payload.IfDescr != "User port 45" {
+		t.Fatalf("expected if_descr from alias, got %q", payload.IfDescr)
+	}
+	if payload.AdminStatus != "down" {
+		t.Fatalf("expected admin_status down, got %q", payload.AdminStatus)
+	}
 	if payload.OperStatus != "down" {
 		t.Fatalf("expected oper_status down, got %q", payload.OperStatus)
 	}
@@ -70,7 +83,7 @@ func TestHTTPPortStatusForwarderPostsNormalizedPayload(t *testing.T) {
 	if payload.OccurredAt != "2026-07-06T12:00:00Z" {
 		t.Fatalf("expected occurred_at to use received time, got %q", payload.OccurredAt)
 	}
-	if len(payload.Varbinds) != 1 || payload.Varbinds[0].Value != "45" {
+	if len(payload.Varbinds) != 5 || payload.Varbinds[0].Value != "45" {
 		t.Fatalf("expected varbind payload to be preserved, got %+v", payload.Varbinds)
 	}
 }
