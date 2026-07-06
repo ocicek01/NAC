@@ -197,7 +197,7 @@ class SwitchStatsService
         $userLabel = $endpoint?->user_name ?? $this->goDeviceUserLabel($goDevice) ?? '-';
         $roleLabel = $endpoint?->role_name ?? $this->goDeviceRoleLabel($goDevice) ?? '-';
         $hostname = $endpoint?->hostname ?? ($goDevice['hostname'] ?? '-') ?: '-';
-        $macAddress = $endpoint?->mac_address ?? ($goDevice['mac_address'] ?? '-') ?: '-';
+        $macAddress = $endpoint?->mac_address ?? ($goDevice['mac_address'] ?? $this->firstMACAddressFromPort($goPort) ?? '-') ?: '-';
         $ipAddress = $endpoint?->ip_address ?? ($goDevice['current_ip_address'] ?? '-') ?: '-';
         $deviceType = $endpoint?->device_type ?? ($goDevice['device_type'] ?? '-') ?: '-';
         $identitySource = $this->goDeviceIdentitySourceLabel($goDevice) ?? '-';
@@ -800,6 +800,22 @@ class SwitchStatsService
             'radius-vlan' => 'RADIUS VLAN',
             default => null,
         };
+    }
+
+    protected function firstMACAddressFromPort(?array $goPort): ?string
+    {
+        if (! is_array($goPort)) {
+            return null;
+        }
+
+        foreach ((array) ($goPort['mac_addresses'] ?? []) as $mac) {
+            $candidate = trim((string) $mac);
+            if ($candidate !== '') {
+                return $candidate;
+            }
+        }
+
+        return null;
     }
 
     protected function effectivePortVlan(SwitchPort $port, ?int $locationVlan, ?array $goPort, ?array $goDevice): int
