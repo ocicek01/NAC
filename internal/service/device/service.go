@@ -16,6 +16,7 @@ import (
 	dhcpevent "nac/internal/domain/dhcpevent"
 	enforcementdomain "nac/internal/domain/enforcement"
 	macobservation "nac/internal/domain/macobservation"
+	portendpointdomain "nac/internal/domain/portendpoint"
 	switchportdomain "nac/internal/domain/switchport"
 	"nac/internal/normalize"
 	enforcementservice "nac/internal/service/enforcement"
@@ -48,7 +49,12 @@ type EnforcementRecorder interface {
 }
 
 type SwitchPortResolver interface {
+	ListBySwitch(ctx context.Context, switchID string) ([]switchportdomain.Port, error)
 	FindBySwitchIfIndex(ctx context.Context, switchID string, ifIndex int) (*switchportdomain.Port, error)
+}
+
+type PortEndpointResolver interface {
+	ListBySwitch(ctx context.Context, switchID string) ([]portendpointdomain.Endpoint, error)
 }
 
 type Service struct {
@@ -57,6 +63,7 @@ type Service struct {
 	enforcement          EnforcementRecorder
 	logger               *slog.Logger
 	switchPorts          SwitchPortResolver
+	portEndpoints        PortEndpointResolver
 	registrationVLAN     int
 	guestVLAN            int
 	quarantineVLAN       int
@@ -93,13 +100,14 @@ type RadiusInventoryInput struct {
 	PolicyReasonOverride string
 }
 
-func NewService(logger *slog.Logger, repository domain.Repository, policies PolicyEvaluator, enforcement EnforcementRecorder, switchPorts SwitchPortResolver, registrationVLAN, guestVLAN, quarantineVLAN int, autoExecute bool, ipLearningEnabled bool, ipLearningWait, ipRecheck, portBounceDelay time.Duration, portBounceEnabled bool, maxMACCountForBounce int) *Service {
+func NewService(logger *slog.Logger, repository domain.Repository, policies PolicyEvaluator, enforcement EnforcementRecorder, switchPorts SwitchPortResolver, portEndpoints PortEndpointResolver, registrationVLAN, guestVLAN, quarantineVLAN int, autoExecute bool, ipLearningEnabled bool, ipLearningWait, ipRecheck, portBounceDelay time.Duration, portBounceEnabled bool, maxMACCountForBounce int) *Service {
 	return &Service{
 		repository:           repository,
 		policies:             policies,
 		enforcement:          enforcement,
 		logger:               logger,
 		switchPorts:          switchPorts,
+		portEndpoints:        portEndpoints,
 		registrationVLAN:     registrationVLAN,
 		guestVLAN:            guestVLAN,
 		quarantineVLAN:       quarantineVLAN,
@@ -126,16 +134,155 @@ func (s *Service) ListByMAC(ctx context.Context, macAddress string) ([]domain.De
 }
 
 func (s *Service) ListBySwitch(ctx context.Context, switchID string) ([]domain.Device, error) {
-	return s.repository.ListBySwitch(ctx, switchID)
+	devices, err := s.repository.ListBySwitch(ctx, switchID)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.mergeObservedPortDevices(ctx, switchID, 0, devices)
 }
 
 func (s *Service) ListBySwitchAndIfIndex(ctx context.Context, switchID string, ifIndex int) ([]domain.Device, error) {
 	if ifIndex <= 0 {
-		return s.repository.ListBySwitch(ctx, switchID)
+		return s.ListBySwitch(ctx, switchID)
 	}
-	return s.repository.ListBySwitchAndIfIndex(ctx, switchID, ifIndex)
+
+	devices, err := s.repository.ListBySwitchAndIfIndex(ctx, switchID, ifIndex)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.mergeObservedPortDevices(ctx, switchID, ifIndex, devices)
 }
 
+func (s *Service) mergeObservedPortDevices(ctx context.Context, switchID string, ifIndex int, devices []domain.Device) ([]domain.Device, error) {
+	switchID = strings.TrimSpace(switchID)
+	if switchID == "" || s.switchPorts == nil {
+		return devices, nil
+	}
+
+	var ports []switchportdomain.Port
+	if ifIndex > 0 {
+		port, err := s.switchPorts.FindBySwitchIfIndex(ctx, switchID, ifIndex)
+		if err != nil {
+			return nil, err
+		}
+		if port == nil {
+			return devices, nil
+		}
+		ports = []switchportdomain.Port{*port}
+	} else {
+		var err error
+		ports, err = s.switchPorts.ListBySwitch(ctx, switchID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	endpointByKey := map[string]portendpointdomain.Endpoint{}
+	if s.portEndpoints != nil {
+		items, err := s.portEndpoints.ListBySwitch(ctx, switchID)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range items {
+			if ifIndex > 0 && item.PortIfIndex != ifIndex {
+				continue
+			}
+			mac := normalize.MACAddress(item.MACAddress)
+			if mac == "" {
+				continue
+			}
+			endpointByKey[s.syntheticObservedDeviceKey(switchID, item.PortIfIndex, mac)] = item
+		}
+	}
+
+	existing := map[string]struct{}{}
+	for _, device := range devices {
+		mac := normalize.MACAddress(device.MACAddress)
+		if mac == "" {
+			continue
+		}
+		existing[s.syntheticObservedDeviceKey(switchID, device.CurrentIfIndex, mac)] = struct{}{}
+		existing[mac] = struct{}{}
+	}
+
+	merged := append([]domain.Device{}, devices...)
+	for _, port := range ports {
+		for _, rawMAC := range port.MACAddresses {
+			mac := normalize.MACAddress(rawMAC)
+			if mac == "" {
+				continue
+			}
+			key := s.syntheticObservedDeviceKey(switchID, port.IfIndex, mac)
+			if _, ok := existing[key]; ok {
+				continue
+			}
+			if _, ok := existing[mac]; ok {
+				continue
+			}
+			var endpoint *portendpointdomain.Endpoint
+			if item, ok := endpointByKey[key]; ok {
+				endpoint = &item
+			}
+			merged = append(merged, s.syntheticObservedDevice(switchID, port, endpoint, mac))
+			existing[key] = struct{}{}
+			existing[mac] = struct{}{}
+		}
+	}
+
+	return merged, nil
+}
+
+func (s *Service) syntheticObservedDevice(switchID string, port switchportdomain.Port, endpoint *portendpointdomain.Endpoint, macAddress string) domain.Device {
+	now := time.Now().UTC()
+	device := domain.Device{
+		ID:                          s.syntheticObservedDeviceKey(switchID, port.IfIndex, macAddress),
+		MACAddress:                  macAddress,
+		DeviceType:                  "unknown",
+		Status:                      deviceStatusPending,
+		CurrentSwitchID:             strings.TrimSpace(switchID),
+		CurrentIfIndex:              port.IfIndex,
+		CurrentInterfaceName:        strings.TrimSpace(port.InterfaceName),
+		CurrentInterfaceDescription: strings.TrimSpace(port.InterfaceDescription),
+		CurrentSourceType:           "switch_port",
+		CurrentConfidence:           "observed",
+		FirstSeenAt:                 now,
+		LastSeenAt:                  now,
+		CreatedAt:                   now,
+		UpdatedAt:                   now,
+	}
+
+	if !port.UpdatedAt.IsZero() {
+		device.FirstSeenAt = port.UpdatedAt
+		device.LastSeenAt = port.UpdatedAt
+		device.CreatedAt = port.UpdatedAt
+		device.UpdatedAt = port.UpdatedAt
+	}
+
+	if endpoint != nil {
+		device.CurrentIPAddress = strings.TrimSpace(endpoint.IPAddress)
+		device.Hostname = strings.TrimSpace(endpoint.Hostname)
+		if confidence := strings.TrimSpace(endpoint.SourceConfidence); confidence != "" {
+			device.CurrentConfidence = confidence
+		}
+		if !endpoint.LastSeenAt.IsZero() {
+			device.LastSeenAt = endpoint.LastSeenAt
+			device.UpdatedAt = endpoint.LastSeenAt
+		}
+		if !endpoint.CreatedAt.IsZero() {
+			device.FirstSeenAt = endpoint.CreatedAt
+			device.CreatedAt = endpoint.CreatedAt
+		}
+		device.CurrentSourceType = "port_endpoint"
+	}
+
+	return device
+}
+
+func (s *Service) syntheticObservedDeviceKey(switchID string, ifIndex int, macAddress string) string {
+	return fmt.Sprintf("observed:%s:%d:%s", strings.TrimSpace(switchID), ifIndex, strings.ToLower(strings.TrimSpace(macAddress)))
+}
 func (s *Service) UpdateStatus(ctx context.Context, macAddress, status, approvedBy string, expiresAt time.Time, targetVLAN int) (domain.Device, error) {
 	macAddress = normalize.MACAddress(macAddress)
 	if macAddress == "" {

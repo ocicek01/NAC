@@ -133,6 +133,7 @@ func New(ctx context.Context) (*App, error) {
 		policyEngineService,
 		enforcementEngineService,
 		switchPortRepository,
+		portEndpointRepository,
 		parseVLANID(cfg.Radius.RegistrationVLAN),
 		parseVLANID(cfg.Radius.GuestVLAN),
 		parseVLANID(cfg.Radius.QuarantineVLAN),
