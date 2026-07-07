@@ -963,6 +963,7 @@
         let currentSelectedPortId = @json($switchData['selectedPort']);
         let activeDiscoveryJob = null;
         let pendingVlanAction = null;
+        let selectedPortDetailSyncHandle = null;
         const endpointPendingLabels = {
             user: 'RADIUS verisi bekleniyor',
             ip: 'IP verisi yok',
@@ -977,6 +978,7 @@
         const csrfToken = @json(csrf_token());
         const switchPortActionUrlTemplate = @json(url('/switch-ports/__PORT__/actions'));
         const portStatusUrl = switchId ? '/api/switches/' + switchId + '/ports/status' : null;
+        const portDetailsUrl = switchId ? '/api/switches/' + switchId + '/ports' : null;
         const portEventsUrl = '/api/events/ports';
         const portAllowForm = document.getElementById('port-allow-form');
         const portGuestForm = document.getElementById('port-guest-form');
@@ -1375,6 +1377,55 @@
             if (selectedContextPort && String(selectedContextPort.id) === String(portId)) {
                 selectedContextPort = portMap[String(portId)];
             }
+        }
+
+        async function loadPortDetails() {
+            if (!portDetailsUrl) {
+                return;
+            }
+
+            const response = await fetch(portDetailsUrl, {
+                headers: {
+                    'Accept': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
+            });
+
+            if (!response.ok) {
+                throw new Error('Port detay listesi alinamadi.');
+            }
+
+            const payload = await response.json();
+            (payload.data || []).forEach(function (item) {
+                if (!item || !item.id) {
+                    return;
+                }
+
+                mergePortData(item.id, item);
+            });
+
+            if (portMap[String(currentSelectedPortId)]) {
+                updateSelectedPort(currentSelectedPortId);
+            }
+            if (selectedContextPort && portMap[String(selectedContextPort.id)]) {
+                selectedContextPort = portMap[String(selectedContextPort.id)];
+            }
+        }
+
+        function startSelectedPortDetailSync() {
+            if (selectedPortDetailSyncHandle !== null) {
+                return;
+            }
+
+            selectedPortDetailSyncHandle = window.setInterval(function () {
+                if (!currentSelectedPortId || !portMap[String(currentSelectedPortId)]) {
+                    return;
+                }
+
+                refreshPortDetail(currentSelectedPortId).catch(function (error) {
+                    console.error(error);
+                });
+            }, 15000);
         }
 
         function syncSelectedPortQuery(portId) {
@@ -1887,9 +1938,15 @@
         loadPortStatuses().catch(function (error) {
             console.error(error);
         });
+        loadPortDetails().catch(function (error) {
+            console.error(error);
+        });
         startPortStatusStream();
+        startSelectedPortDetailSync();
         window.addEventListener('scroll', hideContextMenu, true);
         window.addEventListener('resize', hideContextMenu);
     </script>
 </body>
 </html>
+
+
