@@ -180,7 +180,10 @@ class SwitchStatsService
         $goPort = $this->goPortForLocalPort($port, $goPorts);
         $goDevice = $this->goDeviceForLocalPort($port, $goDevices, $goPort);
         $state = $this->portVisualState($port, $endpoint?->status, $goPort, $goDevice);
-        $policy = $endpoint?->policy_name ?? $this->goDevicePolicyName($goDevice) ?? '-';
+        $policy = $this->firstFilledValue(
+            $endpoint?->policy_name,
+            $this->goDevicePolicyName($goDevice)
+        ) ?? '-';
         $connected = $endpoint !== null || $goDevice !== null;
         $speedLabel = $port->speed ?: '0';
         $statusText = $this->portStatusLabel($state);
@@ -194,14 +197,33 @@ class SwitchStatsService
         $portTypeLabel = $isLinkedUplink ? 'Uplink' : Str::headline($port->port_type);
         $uplinkSource = $this->uplinkSourceLabel($topology, $goPort, $isLinkedUplink, $macCount);
 
-        $userLabel = $endpoint?->user_name ?? $this->goDeviceUserLabel($goDevice) ?? '-';
-        $roleLabel = $endpoint?->role_name ?? $this->goDeviceRoleLabel($goDevice) ?? '-';
-        $hostname = $endpoint?->hostname ?? ($goDevice['hostname'] ?? '-') ?: '-';
-        $macAddress = $endpoint?->mac_address ?? ($goDevice['mac_address'] ?? $this->firstMACAddressFromPort($goPort) ?? '-') ?: '-';
-        $ipAddress = $endpoint?->ip_address ?? ($goDevice['current_ip_address'] ?? '-') ?: '-';
-        $deviceType = $endpoint?->device_type ?? ($goDevice['device_type'] ?? '-') ?: '-';
-        $identitySource = $this->goDeviceIdentitySourceLabel($goDevice) ?? '-';
-        $enforcementMethod = $this->goDeviceEnforcementMethodLabel($goDevice) ?? '-';
+        $userLabel = $this->firstFilledValue(
+            $endpoint?->user_name,
+            $this->goDeviceUserLabel($goDevice)
+        ) ?? '-';
+        $roleLabel = $this->firstFilledValue(
+            $endpoint?->role_name,
+            $this->goDeviceRoleLabel($goDevice)
+        ) ?? '-';
+        $hostname = $this->firstFilledValue(
+            $endpoint?->hostname,
+            $goDevice['hostname'] ?? null
+        ) ?? '-';
+        $macAddress = $this->firstFilledValue(
+            $endpoint?->mac_address,
+            $goDevice['mac_address'] ?? null,
+            $this->firstMACAddressFromPort($goPort)
+        ) ?? '-';
+        $ipAddress = $this->firstFilledValue(
+            $endpoint?->ip_address,
+            $goDevice['current_ip_address'] ?? null
+        ) ?? '-';
+        $deviceType = $this->firstFilledValue(
+            $endpoint?->device_type,
+            $goDevice['device_type'] ?? null
+        ) ?? '-';
+        $identitySource = $this->firstFilledValue($this->goDeviceIdentitySourceLabel($goDevice)) ?? '-';
+        $enforcementMethod = $this->firstFilledValue($this->goDeviceEnforcementMethodLabel($goDevice)) ?? '-';
 
         $effectiveVlan = $this->effectivePortVlan($port, $location?->vlan_id, $goPort, $goDevice);
         $effectiveMacCount = $this->effectivePortMacCount($goPort, $goDevice, $macAddress ?? null);
@@ -888,6 +910,18 @@ class SwitchStatsService
         }
 
         return preg_replace('/[^a-f0-9]/', '', $normalized) ?? '';
+    }
+
+    protected function firstFilledValue(mixed ...$values): ?string
+    {
+        foreach ($values as $value) {
+            $candidate = trim((string) $value);
+            if ($candidate !== '' && $candidate !== '-') {
+                return $candidate;
+            }
+        }
+
+        return null;
     }
 
     protected function effectivePortVlan(SwitchPort $port, ?int $locationVlan, ?array $goPort, ?array $goDevice): int

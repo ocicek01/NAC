@@ -132,6 +132,61 @@ class SwitchStatsServiceTest extends TestCase
         $this->assertSame('MAC Heuristigi', $payload['uplinkSource']);
     }
 
+    public function test_port_payload_falls_back_to_go_device_when_endpoint_fields_are_blank(): void
+    {
+        $goPorts = [
+            'port-index:7' => [
+                'port_index' => 7,
+                'interface_name' => 'Gi1/0/7',
+                'mac_addresses' => ['aa:bb:cc:dd:ee:ff'],
+            ],
+        ];
+
+        $goDevices = [
+            'port-index:7' => [[
+                'id' => 'device-7',
+                'current_if_index' => 7,
+                'hostname' => 'lab-pc-07',
+                'current_ip_address' => '10.10.7.15',
+                'mac_address' => 'aa:bb:cc:dd:ee:ff',
+                'device_type' => 'workstation',
+                'identity_username' => 'lab.user',
+                'identity_type' => 'personel',
+                'policy_action' => 'active',
+                'identity_source' => 'ldap',
+                'last_enforcement_method' => 'radius-coa',
+                'last_seen_at' => '2026-07-07T10:00:00Z',
+            ]],
+        ];
+
+        $service = new SwitchStatsServiceTestDouble([], $goPorts, [], $goDevices);
+
+        $port = $this->makePort('Gi1/0/7', 7, 'access');
+        $port->setRelation('switch', new NetworkSwitch(['model' => 'C9300-48P']));
+        $endpoint = $port->getRelation('currentLocation')->getRelation('endpoint');
+        $endpoint->forceFill([
+            'mac_address' => '',
+            'ip_address' => '',
+            'hostname' => '',
+            'user_name' => '',
+            'device_type' => '',
+            'policy_name' => '',
+            'role_name' => '',
+        ]);
+
+        $payload = $service->portPayload($port, [], $goPorts, $goDevices);
+
+        $this->assertSame('lab.user', $payload['user']);
+        $this->assertSame('aa:bb:cc:dd:ee:ff', $payload['mac']);
+        $this->assertSame('10.10.7.15', $payload['ip']);
+        $this->assertSame('lab-pc-07', $payload['hostname']);
+        $this->assertSame('workstation', $payload['deviceType']);
+        $this->assertSame('ACTIVE', $payload['policyText']);
+        $this->assertSame('Personel', $payload['role']);
+        $this->assertSame('LDAP', $payload['identitySource']);
+        $this->assertSame('RADIUS CoA', $payload['enforcementMethod']);
+    }
+
     public function test_detail_resolves_go_switch_id_by_hostname_when_local_id_differs(): void
     {
         $switch = new NetworkSwitch([
@@ -213,7 +268,7 @@ class SwitchStatsServiceTest extends TestCase
 
 class SwitchStatsServiceTestDouble extends SwitchStatsService
 {
-    public function __construct(private array $topologyLinks = [], private array $goPorts = [], private array $goSummary = [])
+    public function __construct(private array $topologyLinks = [], private array $goPorts = [], private array $goSummary = [], private array $goDevices = [])
     {
         parent::__construct();
     }
@@ -236,6 +291,11 @@ class SwitchStatsServiceTestDouble extends SwitchStatsService
     protected function goPortSummaryForSwitch(NetworkSwitch $switch): array
     {
         return $this->goSummary;
+    }
+
+    protected function goDevicesForSwitch(NetworkSwitch $switch): array
+    {
+        return $this->goDevices;
     }
 
     protected function eventEntries(NetworkSwitch $switch): array
