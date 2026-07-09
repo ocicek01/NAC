@@ -153,7 +153,7 @@ func (s *Service) List(ctx context.Context) ([]domain.Device, error) {
 	if err != nil {
 		return nil, err
 	}
-	return s.enrichLDAPDevices(ctx, devices), nil
+	return s.enrichLDAPDevices(ctx, devices, false), nil
 }
 
 func (s *Service) ListByMAC(ctx context.Context, macAddress string) ([]domain.Device, error) {
@@ -165,7 +165,7 @@ func (s *Service) ListByMAC(ctx context.Context, macAddress string) ([]domain.De
 	if err != nil {
 		return nil, err
 	}
-	return s.enrichLDAPDevices(ctx, devices), nil
+	return s.enrichLDAPDevices(ctx, devices, true), nil
 }
 
 func (s *Service) ListBySwitch(ctx context.Context, switchID string) ([]domain.Device, error) {
@@ -178,7 +178,7 @@ func (s *Service) ListBySwitch(ctx context.Context, switchID string) ([]domain.D
 	if err != nil {
 		return nil, err
 	}
-	return s.enrichLDAPDevices(ctx, devices), nil
+	return s.enrichLDAPDevices(ctx, devices, false), nil
 }
 
 func (s *Service) ListBySwitchAndIfIndex(ctx context.Context, switchID string, ifIndex int) ([]domain.Device, error) {
@@ -195,11 +195,14 @@ func (s *Service) ListBySwitchAndIfIndex(ctx context.Context, switchID string, i
 	if err != nil {
 		return nil, err
 	}
-	return s.enrichLDAPDevices(ctx, devices), nil
+	return s.enrichLDAPDevices(ctx, devices, false), nil
 }
 
-func (s *Service) enrichLDAPDevices(ctx context.Context, devices []domain.Device) []domain.Device {
+func (s *Service) enrichLDAPDevices(ctx context.Context, devices []domain.Device, eager bool) []domain.Device {
 	if s.ldapDevices == nil || len(devices) == 0 {
+		return devices
+	}
+	if !eager && len(devices) > 25 {
 		return devices
 	}
 
