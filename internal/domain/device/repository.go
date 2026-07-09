@@ -7,7 +7,7 @@ import (
 
 type Repository interface {
 	Upsert(ctx context.Context, device Device) (Device, error)
-	List(ctx context.Context) ([]Device, error)
+	List(ctx context.Context, limit, offset int) ([]Device, error)
 	ListByMAC(ctx context.Context, macAddress string) ([]Device, error)
 	ListBySwitch(ctx context.Context, switchID string) ([]Device, error)
 	ListBySwitchAndIfIndex(ctx context.Context, switchID string, ifIndex int) ([]Device, error)

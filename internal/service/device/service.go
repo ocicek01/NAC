@@ -148,12 +148,18 @@ func NewService(logger *slog.Logger, repository domain.Repository, policies Poli
 	}
 }
 
-func (s *Service) List(ctx context.Context) ([]domain.Device, error) {
-	devices, err := s.repository.List(ctx)
-	if err != nil {
-		return nil, err
+func (s *Service) List(ctx context.Context, limit, offset int) ([]domain.Device, error) {
+	if limit <= 0 {
+		limit = 50
 	}
-	return s.enrichLDAPDevices(ctx, devices, false), nil
+	if limit > 200 {
+		limit = 200
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	return s.repository.List(ctx, limit, offset)
 }
 
 func (s *Service) ListByMAC(ctx context.Context, macAddress string) ([]domain.Device, error) {

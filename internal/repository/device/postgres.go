@@ -272,6 +272,74 @@ var deviceSelectColumns = `
 		updated_at
 `
 
+var deviceListColumns = `
+		id,
+		mac_address,
+		'',
+		COALESCE(device_type, 'unknown'),
+		COALESCE(label, ''),
+		COALESCE(description, ''),
+		COALESCE(hostname, ''),
+		COALESCE(vendor_class, ''),
+		COALESCE(status, ''),
+		COALESCE(approved_at, '0001-01-01T00:00:00Z'::timestamptz),
+		COALESCE(approved_by, ''),
+		COALESCE(expires_at, '0001-01-01T00:00:00Z'::timestamptz),
+		COALESCE(policy_action, ''),
+		COALESCE(policy_reason, ''),
+		COALESCE(classification_method, ''),
+		COALESCE(trust_level, ''),
+		COALESCE(authentication_method, ''),
+		COALESCE(authentication_status, ''),
+		COALESCE(sophos_username, ''),
+		COALESCE(sophos_last_ip::text, ''),
+		COALESCE(sophos_last_seen_at, '0001-01-01T00:00:00Z'::timestamptz),
+		COALESCE(last_policy_decision, ''),
+		COALESCE(last_policy_evaluated_at, '0001-01-01T00:00:00Z'::timestamptz),
+		COALESCE(current_switch_id::text, ''),
+		COALESCE(current_switch_name, ''),
+		COALESCE(current_management_ip::text, ''),
+		COALESCE(current_port_id::text, ''),
+		COALESCE(current_bridge_port, 0),
+		COALESCE(current_if_index, 0),
+		COALESCE(current_interface_name, ''),
+		COALESCE(current_interface_description, ''),
+		COALESCE(current_source_type, ''),
+		COALESCE(current_confidence, ''),
+		'',
+		'',
+		'',
+		'',
+		COALESCE(last_enforcement_action, ''),
+		COALESCE(last_enforcement_vlan, 0),
+		COALESCE(last_enforcement_status, ''),
+		COALESCE(last_enforcement_switch_id::text, ''),
+		COALESCE(last_enforcement_if_index, 0),
+		COALESCE(last_enforcement_at, '0001-01-01T00:00:00Z'::timestamptz),
+		'',
+		'',
+		0,
+		COALESCE(last_enforcement_method, ''),
+		'0001-01-01T00:00:00Z'::timestamptz,
+		'0001-01-01T00:00:00Z'::timestamptz,
+		'',
+		0,
+		'',
+		'0001-01-01T00:00:00Z'::timestamptz,
+		'0001-01-01T00:00:00Z'::timestamptz,
+		'0001-01-01T00:00:00Z'::timestamptz,
+		COALESCE(first_seen_at, '0001-01-01T00:00:00Z'::timestamptz),
+		COALESCE(last_seen_at, '0001-01-01T00:00:00Z'::timestamptz),
+		created_at,
+		updated_at
+`
+
+func scanDeviceList(scanner interface {
+	Scan(dest ...any) error
+}) (domain.Device, error) {
+	return scanDevice(scanner)
+}
+
 func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository {
 	return &PostgresRepository{pool: pool}
 }
@@ -763,22 +831,33 @@ func (r *PostgresRepository) Upsert(ctx context.Context, device domain.Device) (
 	return out, nil
 }
 
-func (r *PostgresRepository) List(ctx context.Context) ([]domain.Device, error) {
+func (r *PostgresRepository) List(ctx context.Context, limit, offset int) ([]domain.Device, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
 	query := `
-		SELECT ` + deviceSelectColumns + `
+		SELECT ` + deviceListColumns + `
 		FROM devices
 		ORDER BY last_seen_at DESC NULLS LAST, created_at DESC
+		LIMIT $1 OFFSET $2
 	`
 
-	rows, err := r.pool.Query(ctx, query)
+	rows, err := r.pool.Query(ctx, query, limit, offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var devices []domain.Device
+	devices := make([]domain.Device, 0, limit)
 	for rows.Next() {
-		item, err := scanDevice(rows)
+		item, err := scanDeviceList(rows)
 		if err != nil {
 			return nil, err
 		}

@@ -14,7 +14,7 @@ import (
 )
 
 type deviceService interface {
-	List(ctx context.Context) ([]device.Device, error)
+	List(ctx context.Context, limit, offset int) ([]device.Device, error)
 	ListByMAC(ctx context.Context, macAddress string) ([]device.Device, error)
 	ListBySwitch(ctx context.Context, switchID string) ([]device.Device, error)
 	ListBySwitchAndIfIndex(ctx context.Context, switchID string, ifIndex int) ([]device.Device, error)
@@ -68,6 +68,29 @@ func registerDeviceRoutes(mux *http.ServeMux, service deviceService) {
 			}
 			ifIndex = parsed
 		}
+		limit := 50
+		if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed <= 0 {
+				http.Error(w, "limit must be a positive integer", http.StatusBadRequest)
+				return
+			}
+			if parsed > 200 {
+				parsed = 200
+			}
+			limit = parsed
+		}
+
+		offset := 0
+		if raw := strings.TrimSpace(r.URL.Query().Get("offset")); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 0 {
+				http.Error(w, "offset must be zero or a positive integer", http.StatusBadRequest)
+				return
+			}
+			offset = parsed
+		}
+
 		var (
 			devices []device.Device
 			err     error
@@ -80,7 +103,7 @@ func registerDeviceRoutes(mux *http.ServeMux, service deviceService) {
 		case switchID != "":
 			devices, err = service.ListBySwitch(r.Context(), switchID)
 		default:
-			devices, err = service.List(r.Context())
+			devices, err = service.List(r.Context(), limit, offset)
 		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)

@@ -13,6 +13,7 @@ import (
 	portendpointdomain "nac/internal/domain/portendpoint"
 	sessiondomain "nac/internal/domain/session"
 	switchportdomain "nac/internal/domain/switchport"
+	identitysource "nac/internal/service/identitysource"
 )
 
 func TestListBySwitchAndIfIndexFallsBackToObservedPortData(t *testing.T) {
@@ -165,6 +166,32 @@ func TestListBySwitchAndIfIndexFallsBackToDHCPEventData(t *testing.T) {
 		t.Fatalf("expected hostname from dhcp event, got %q", devices[0].Hostname)
 	}
 }
+func TestListUsesPaginationWithoutLDAPEnrichment(t *testing.T) {
+	repo := &stubDeviceRepository{
+		list: []devicedomain.Device{{MACAddress: "AA:BB:CC:DD:EE:FF"}},
+	}
+	ldap := &stubLDAPDeviceResolver{}
+
+	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, nil, nil, nil, nil, nil, ldap, 0, 0, 0, false, false, 0, 0, 0, false, 0)
+
+	devices, err := service.List(context.Background(), 25, 10)
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if len(devices) != 1 {
+		t.Fatalf("expected 1 device, got %d", len(devices))
+	}
+	if repo.listCalls != 1 {
+		t.Fatalf("expected repository List to be called once, got %d", repo.listCalls)
+	}
+	if repo.listLimit != 25 || repo.listOffset != 10 {
+		t.Fatalf("expected limit/offset 25/10, got %d/%d", repo.listLimit, repo.listOffset)
+	}
+	if ldap.lookupCalls != 0 {
+		t.Fatalf("expected no LDAP lookups for list endpoint, got %d", ldap.lookupCalls)
+	}
+}
+
 func TestListBySwitchKeepsRealInventoryAndAppendsObservedFallbacks(t *testing.T) {
 	repo := &stubDeviceRepository{
 		bySwitch: []devicedomain.Device{
@@ -207,15 +234,22 @@ func TestListBySwitchKeepsRealInventoryAndAppendsObservedFallbacks(t *testing.T)
 }
 
 type stubDeviceRepository struct {
-	bySwitch []devicedomain.Device
-	byPort   []devicedomain.Device
+	list       []devicedomain.Device
+	bySwitch   []devicedomain.Device
+	byPort     []devicedomain.Device
+	listLimit  int
+	listOffset int
+	listCalls  int
 }
 
 func (s *stubDeviceRepository) Upsert(ctx context.Context, device devicedomain.Device) (devicedomain.Device, error) {
 	return device, nil
 }
-func (s *stubDeviceRepository) List(ctx context.Context) ([]devicedomain.Device, error) {
-	return nil, nil
+func (s *stubDeviceRepository) List(ctx context.Context, limit, offset int) ([]devicedomain.Device, error) {
+	s.listCalls++
+	s.listLimit = limit
+	s.listOffset = offset
+	return append([]devicedomain.Device{}, s.list...), nil
 }
 func (s *stubDeviceRepository) ListByMAC(ctx context.Context, macAddress string) ([]devicedomain.Device, error) {
 	return nil, nil
@@ -307,4 +341,13 @@ func (s *stubDHCPEventResolver) FindLatestByMAC(ctx context.Context, macAddress 
 	}
 	copyItem := *item
 	return &copyItem, nil
+}
+
+type stubLDAPDeviceResolver struct {
+	lookupCalls int
+}
+
+func (s *stubLDAPDeviceResolver) LookupByMAC(ctx context.Context, macAddress string) (*identitysource.LDAPDeviceRecord, error) {
+	s.lookupCalls++
+	return nil, nil
 }
