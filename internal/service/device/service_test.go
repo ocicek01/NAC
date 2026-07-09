@@ -226,6 +226,45 @@ func TestListQueuesMissingEnrichmentWithoutBlocking(t *testing.T) {
 	}
 }
 
+func TestListRequeuesLookupFailedEnrichment(t *testing.T) {
+	repo := &stubDeviceRepository{
+		list: []devicedomain.Device{{MACAddress: "AA:BB:CC:DD:EE:11", EnrichmentStatus: enrichmentStatusLookupFailed}},
+		byMAC: map[string][]devicedomain.Device{
+			"AA:BB:CC:DD:EE:11": {{ID: "dev-2", MACAddress: "AA:BB:CC:DD:EE:11", PolicyAction: "unknown", PolicyReason: "unknown", Status: "unknown"}},
+		},
+	}
+	ldap := &stubLDAPDeviceResolver{}
+	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, stubPolicyEvaluator{result: policyservice.EvaluationResult{Status: "unknown", Action: "unknown", Reason: "matched"}}, nil, nil, nil, nil, nil, nil, ldap, nil, 0, 0, 0, false, false, 0, 0, 0, false, 0)
+
+	_, err := service.List(context.Background(), 10, 0)
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if repo.lastEnrichment.MACAddress == "AA:BB:CC:DD:EE:11" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if repo.lastEnrichment.MACAddress != "AA:BB:CC:DD:EE:11" {
+		t.Fatalf("expected lookup_failed device to be requeued")
+	}
+}
+
+func TestShouldEnqueueEnrichment(t *testing.T) {
+	if !shouldEnqueueEnrichment("") {
+		t.Fatalf("expected blank enrichment status to be queued")
+	}
+	if !shouldEnqueueEnrichment(enrichmentStatusLookupFailed) {
+		t.Fatalf("expected lookup_failed enrichment status to be queued")
+	}
+	if shouldEnqueueEnrichment(enrichmentStatusNotFound) {
+		t.Fatalf("expected not_found enrichment status to be skipped")
+	}
+}
+
 func TestEnrichDeviceMetadataAppliesOwnerMetadataAndPolicyGuard(t *testing.T) {
 	repo := &stubDeviceRepository{
 		byMAC: map[string][]devicedomain.Device{

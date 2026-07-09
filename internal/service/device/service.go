@@ -39,6 +39,8 @@ const (
 	enrichmentStatusFound            = "found"
 	enrichmentStatusNotFound         = "not_found"
 	enrichmentStatusLookupFailed     = "lookup_failed"
+	enrichmentEnqueueRetryDelay      = 250 * time.Millisecond
+	enrichmentEnqueueRetryLimit      = 20
 )
 
 type PolicyEvaluator interface {
@@ -687,12 +689,26 @@ func (s *Service) enqueueEnrichment(macAddress string) {
 
 	select {
 	case s.enrichmentQueue <- macAddress:
+		return
 	default:
-		s.enrichmentMu.Lock()
-		delete(s.enrichmentQueued, macAddress)
-		s.enrichmentMu.Unlock()
-		s.logInfo("device enrichment queue is full", "mac_address", macAddress)
+		go s.retryEnqueueEnrichment(macAddress)
 	}
+}
+
+func (s *Service) retryEnqueueEnrichment(macAddress string) {
+	for attempt := 0; attempt < enrichmentEnqueueRetryLimit; attempt++ {
+		time.Sleep(enrichmentEnqueueRetryDelay)
+		select {
+		case s.enrichmentQueue <- macAddress:
+			return
+		default:
+		}
+	}
+
+	s.enrichmentMu.Lock()
+	delete(s.enrichmentQueued, macAddress)
+	s.enrichmentMu.Unlock()
+	s.logInfo("device enrichment queue remained full after retries", "mac_address", macAddress)
 }
 
 func (s *Service) enqueueMissingEnrichment(devices []domain.Device) {
@@ -700,7 +716,7 @@ func (s *Service) enqueueMissingEnrichment(devices []domain.Device) {
 		return
 	}
 	for _, device := range devices {
-		if strings.TrimSpace(device.EnrichmentStatus) != "" {
+		if !shouldEnqueueEnrichment(device.EnrichmentStatus) {
 			continue
 		}
 		s.enqueueEnrichment(device.MACAddress)
@@ -1574,6 +1590,11 @@ func (s *Service) logError(msg string, args ...any) {
 		return
 	}
 	log.Println(append([]any{msg}, args...)...)
+}
+
+func shouldEnqueueEnrichment(status string) bool {
+	status = strings.TrimSpace(status)
+	return status == "" || strings.EqualFold(status, enrichmentStatusLookupFailed)
 }
 
 func deriveTrustLevel(ipAddress, hostname, deviceType string) string {
