@@ -793,6 +793,15 @@ func (s *Service) RunEnrichmentBackfill(ctx context.Context) {
 			if result == "" {
 				result = "skipped"
 			}
+			if result == "skipped" && strings.TrimSpace(candidate.ID) != "" {
+				skippedReason := "device not eligible for enrichment backfill"
+				if err := s.repository.UpdateEnrichmentStatusByID(ctx, candidate.ID, enrichmentSourceOpenLDAP, result, skippedReason, time.Now().UTC()); err != nil {
+					itemErr = err
+					result = "failed"
+				} else if itemErr == nil {
+					itemErr = errors.New(skippedReason)
+				}
+			}
 			results[result]++
 			processed++
 			if s.audit != nil {

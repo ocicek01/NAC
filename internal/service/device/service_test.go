@@ -289,6 +289,27 @@ func TestRunEnrichmentBackfillProcessesCandidates(t *testing.T) {
 	}
 }
 
+func TestRunEnrichmentBackfillMarksSkippedCandidates(t *testing.T) {
+	repo := &stubDeviceRepository{
+		backfill: []devicedomain.Device{{ID: "dev-skip", MACAddress: "not-a-mac"}},
+	}
+	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, nil, nil, nil, nil, nil, &stubLDAPDeviceResolver{}, nil, 0, 0, 0, false, false, 0, 0, 0, false, 0)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	service.RunEnrichmentBackfill(ctx)
+
+	if len(repo.statusByIDCalls) != 1 {
+		t.Fatalf("expected skipped candidate status update, got %d", len(repo.statusByIDCalls))
+	}
+	if repo.statusByIDCalls[0].DeviceID != "dev-skip" {
+		t.Fatalf("expected skipped update for dev-skip, got %q", repo.statusByIDCalls[0].DeviceID)
+	}
+	if repo.statusByIDCalls[0].Status != "skipped" {
+		t.Fatalf("expected skipped status, got %q", repo.statusByIDCalls[0].Status)
+	}
+}
+
 func TestEnrichDeviceMetadataAppliesOwnerMetadataAndPolicyGuard(t *testing.T) {
 	repo := &stubDeviceRepository{
 		byMAC: map[string][]devicedomain.Device{
@@ -402,16 +423,17 @@ func TestListBySwitchKeepsRealInventoryAndAppendsObservedFallbacks(t *testing.T)
 }
 
 type stubDeviceRepository struct {
-	list           []devicedomain.Device
-	backfill       []devicedomain.Device
-	byMAC          map[string][]devicedomain.Device
-	bySwitch       []devicedomain.Device
-	byPort         []devicedomain.Device
-	listLimit      int
-	listOffset     int
-	listCalls      int
-	backfillCalls  int
-	lastEnrichment devicedomain.EnrichmentUpdate
+	list            []devicedomain.Device
+	backfill        []devicedomain.Device
+	byMAC           map[string][]devicedomain.Device
+	bySwitch        []devicedomain.Device
+	byPort          []devicedomain.Device
+	listLimit       int
+	listOffset      int
+	listCalls       int
+	backfillCalls   int
+	lastEnrichment  devicedomain.EnrichmentUpdate
+	statusByIDCalls []statusByIDCall
 }
 
 func (s *stubDeviceRepository) Upsert(ctx context.Context, device devicedomain.Device) (devicedomain.Device, error) {
@@ -455,6 +477,10 @@ func (s *stubDeviceRepository) UpdateEnrichment(ctx context.Context, update devi
 	s.lastEnrichment = update
 	return devicedomain.Device{ID: "updated", MACAddress: update.MACAddress, CurrentSwitchID: "sw-1"}, nil
 }
+func (s *stubDeviceRepository) UpdateEnrichmentStatusByID(ctx context.Context, deviceID, source, status, enrichmentError string, enrichedAt time.Time) error {
+	s.statusByIDCalls = append(s.statusByIDCalls, statusByIDCall{DeviceID: deviceID, Source: source, Status: status, EnrichmentError: enrichmentError})
+	return nil
+}
 func (s *stubDeviceRepository) UpdateSophosIdentity(ctx context.Context, macAddress, username, ipAddress string, seenAt time.Time) error {
 	return nil
 }
@@ -463,6 +489,13 @@ func (s *stubDeviceRepository) UpdateEnforcementState(ctx context.Context, macAd
 }
 func (s *stubDeviceRepository) UpdateIPLearningState(ctx context.Context, macAddress, switchID string, ifIndex int, state string, startedAt, learnedAt, lastBounceAt time.Time) error {
 	return nil
+}
+
+type statusByIDCall struct {
+	DeviceID        string
+	Source          string
+	Status          string
+	EnrichmentError string
 }
 
 type stubSwitchPortResolver struct {

@@ -1215,6 +1215,19 @@ func (r *PostgresRepository) UpdateEnrichment(ctx context.Context, update domain
 	))
 }
 
+func (r *PostgresRepository) UpdateEnrichmentStatusByID(ctx context.Context, deviceID, source, status, enrichmentError string, enrichedAt time.Time) error {
+	query := "UPDATE devices\n" +
+		"SET enrichment_source = $2,\n" +
+		"    enrichment_status = $3,\n" +
+		"    enrichment_error = $4,\n" +
+		"    enriched_at = $5,\n" +
+		"    updated_at = NOW()\n" +
+		"WHERE id = NULLIF($1, '')::uuid"
+
+	_, err := r.pool.Exec(ctx, query, strings.TrimSpace(deviceID), strings.TrimSpace(source), strings.TrimSpace(status), strings.TrimSpace(enrichmentError), nullableTime(enrichedAt))
+	return err
+}
+
 func (r *PostgresRepository) UpdateSophosIdentity(ctx context.Context, macAddress, username, ipAddress string, seenAt time.Time) error {
 	query := "UPDATE devices\n" +
 		"SET sophos_username = $2,\n" +
