@@ -14,6 +14,7 @@ import (
 	"nac/internal/config"
 	"nac/internal/database"
 	arpsnapshotdomain "nac/internal/domain/arpsnapshot"
+	auditlogdomain "nac/internal/domain/auditlog"
 	devicedomain "nac/internal/domain/device"
 	dhcpdomain "nac/internal/domain/dhcpevent"
 	discoveryjobdomain "nac/internal/domain/discoveryjob"
@@ -22,6 +23,7 @@ import (
 	macipbindingdomain "nac/internal/domain/macipbinding"
 	policydomain "nac/internal/domain/policy"
 	portendpointdomain "nac/internal/domain/portendpoint"
+	porteventdomain "nac/internal/domain/portevent"
 	radiuseventdomain "nac/internal/domain/radiusevent"
 	sessiondomain "nac/internal/domain/session"
 	snmptrapdomain "nac/internal/domain/snmptrap"
@@ -31,6 +33,7 @@ import (
 	"nac/internal/httpserver"
 	"nac/internal/logging"
 	arpsnapshotrepository "nac/internal/repository/arpsnapshot"
+	auditlogrepository "nac/internal/repository/auditlog"
 	devicerepository "nac/internal/repository/device"
 	dhcprepository "nac/internal/repository/dhcpevent"
 	discoveryjobrepository "nac/internal/repository/discoveryjob"
@@ -40,6 +43,7 @@ import (
 	macobservationrepository "nac/internal/repository/macobservation"
 	policyrepository "nac/internal/repository/policy"
 	portendpointrepository "nac/internal/repository/portendpoint"
+	porteventrepository "nac/internal/repository/portevent"
 	radiuseventrepository "nac/internal/repository/radiusevent"
 	sessionrepository "nac/internal/repository/session"
 	snmptraprepository "nac/internal/repository/snmptrap"
@@ -47,6 +51,7 @@ import (
 	switchportrepository "nac/internal/repository/switchport"
 	topologyrepository "nac/internal/repository/topology"
 	trapwindowrepository "nac/internal/repository/trapwindow"
+	auditlogservice "nac/internal/service/auditlog"
 	deviceservice "nac/internal/service/device"
 	dhcpservice "nac/internal/service/dhcpevent"
 	discoveryjobservice "nac/internal/service/discoveryjob"
@@ -59,6 +64,7 @@ import (
 	policyservice "nac/internal/service/policy"
 	portalservice "nac/internal/service/portal"
 	portendpointservice "nac/internal/service/portendpoint"
+	porteventservice "nac/internal/service/portevent"
 	radiusauthservice "nac/internal/service/radiusauth"
 	sessionservice "nac/internal/service/session"
 	snmptrapservice "nac/internal/service/snmptrap"
@@ -93,6 +99,7 @@ func New(ctx context.Context) (*App, error) {
 
 	var switchRepository switchdomain.Repository = switchrepository.NewPostgresRepository(postgresPool)
 	var deviceRepository devicedomain.Repository = devicerepository.NewPostgresRepository(postgresPool)
+	var auditLogRepository auditlogdomain.Repository = auditlogrepository.NewPostgresRepository(postgresPool)
 	var guestIdentityRepository guestidentitydomain.Repository = guestidentityrepository.NewPostgresRepository(postgresPool)
 	switchPortRepository := switchportrepository.NewPostgresRepository(postgresPool)
 	var arpSnapshotRepository arpsnapshotdomain.Repository = arpsnapshotrepository.NewPostgresRepository(postgresPool)
@@ -113,7 +120,9 @@ func New(ctx context.Context) (*App, error) {
 	macObservationRepository := macobservationrepository.NewPostgresRepository(postgresPool)
 	macObservationService := macobservationservice.NewService(macObservationRepository)
 	var policyRepository policydomain.Repository = policyrepository.NewPostgresRepository(postgresPool)
+	var portEventRepository porteventdomain.Repository = porteventrepository.NewPostgresRepository(postgresPool)
 	policyEngineService := policyservice.NewService(policyRepository)
+	auditService := auditlogservice.NewService(auditLogRepository)
 	var radiusEventRepository radiuseventdomain.Repository = radiuseventrepository.NewPostgresRepository(postgresPool)
 	var dhcpEventRepository dhcpdomain.Repository = dhcprepository.NewPostgresRepository(postgresPool)
 	var radiusSessionRepository sessiondomain.Repository = sessionrepository.NewPostgresRepository(postgresPool)
@@ -126,6 +135,7 @@ func New(ctx context.Context) (*App, error) {
 	if ldapResolver == nil {
 		ldapResolver = identitysourceservice.NewHTTPResolver("ldap", cfg.Identity.LDAPVerifyURL, timeout)
 	}
+	ldapDeviceResolver := identitysourceservice.NewLDAPDeviceResolver(cfg.Identity)
 	staffResolver := identitysourceservice.NewHTTPResolver("staff_service", cfg.Identity.StaffVerifyURL, timeout)
 	studentResolver := identitysourceservice.NewHTTPResolver("student_service", cfg.Identity.StudentVerifyURL, timeout)
 	deviceService := deviceservice.NewService(
@@ -138,6 +148,7 @@ func New(ctx context.Context) (*App, error) {
 		radiusSessionRepository,
 		macIPBindingRepository,
 		dhcpEventRepository,
+		ldapDeviceResolver,
 		parseVLANID(cfg.Radius.RegistrationVLAN),
 		parseVLANID(cfg.Radius.GuestVLAN),
 		parseVLANID(cfg.Radius.QuarantineVLAN),
@@ -162,10 +173,11 @@ func New(ctx context.Context) (*App, error) {
 		cfg.Feature.Option82CorrelationEnabled,
 	)
 	dhcpEventService := dhcpservice.NewService(dhcpEventRepository, switchRepository, macCorrelationService.Handle)
+	portEventService := porteventservice.NewService(portEventRepository, switchPortRepository, deviceService, auditService)
 	trapForwarder := snmptrapservice.NewHTTPPortStatusForwarder(cfg.SNMPTrap.ForwardEnabled, cfg.SNMPTrap.ForwardURL, cfg.SNMPTrap.ForwardToken, time.Duration(cfg.SNMPTrap.ForwardTimeoutSec)*time.Second)
 	snmpTrapService := snmptrapservice.NewService(logger, snmpTrapRepository, switchRepository, switchPortRepository, trapWindowService, trapForwarder)
 
-	server := httpserver.New(cfg.App.Port, logger, dhcpEventService, switchAssetService, portEndpointService, macLookupService, macObservationService, topologyService, discoveryJobService, deviceService, guestIdentityService, portalRegistrationService, radiusSessionService, policyEngineService, enforcementEngineService, radiusService)
+	server := httpserver.New(cfg.App.Port, logger, dhcpEventService, switchAssetService, portEndpointService, macLookupService, macObservationService, topologyService, discoveryJobService, deviceService, guestIdentityService, portalRegistrationService, radiusSessionService, policyEngineService, enforcementEngineService, radiusService, portEventService, auditService)
 	collector := dhcpcollector.New(cfg.DHCP, logger, dhcpEventService)
 	trapCollector := snmptrapcollector.New(cfg.SNMPTrap, logger, snmpTrapService)
 

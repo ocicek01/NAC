@@ -935,6 +935,35 @@ func (r *PostgresRepository) AddIdentitySnapshot(ctx context.Context, snapshot d
 	return out, nil
 }
 
+func (r *PostgresRepository) AddObservation(ctx context.Context, observation domain.Observation) (domain.Observation, error) {
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO device_observations (
+			id, device_id, mac_address, ip_address, switch_id, port_ifindex, vlan_id, source, observed_at, created_at
+		)
+		VALUES ($1, NULLIF($2, '''')::uuid, $3, NULLIF($4, '''')::inet, NULLIF($5, '''')::uuid, $6, $7, $8, $9, $10)
+	`, observation.ID, observation.DeviceID, observation.MACAddress, observation.IPAddress, observation.SwitchID, observation.PortIfIndex, observation.VLANID, observation.Source, observation.ObservedAt, observation.CreatedAt)
+	if err != nil {
+		return domain.Observation{}, err
+	}
+	return observation, nil
+}
+
+func (r *PostgresRepository) UpdateSophosIdentity(ctx context.Context, macAddress, username, ipAddress string, seenAt time.Time) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE devices
+		SET sophos_username = $2,
+			sophos_last_ip = NULLIF($3, '')::inet,
+			sophos_last_seen_at = $4,
+			authentication_status = CASE
+				WHEN $2 <> '' THEN 'captive-authenticated'
+				ELSE authentication_status
+			END,
+			updated_at = NOW()
+		WHERE `+normalizedMACExpression("mac_address")+` = `+normalizedMACExpression("$1")+`
+	`, macAddress, strings.TrimSpace(username), strings.TrimSpace(ipAddress), nullableTime(seenAt))
+	return err
+}
+
 func (r *PostgresRepository) UpdateEnforcementState(ctx context.Context, macAddress, action string, vlanID int, status, switchID string, ifIndex int, method string, enforcedAt time.Time) error {
 	query := `
 		UPDATE devices

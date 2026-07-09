@@ -17,11 +17,17 @@ type Repository interface {
 }
 
 type EvaluationInput struct {
-	MACAddress  string
-	Hostname    string
-	VendorClass string
-	SwitchName  string
-	Interface   string
+	MACAddress           string
+	Hostname             string
+	VendorClass          string
+	SwitchID             string
+	SwitchName           string
+	Interface            string
+	DeviceType           string
+	AuthenticationMethod string
+	TrustLevel           string
+	ObservationSource    string
+	SophosUsername       string
 }
 
 type EvaluationResult struct {
@@ -147,11 +153,17 @@ func (s *Service) Evaluate(ctx context.Context, input EvaluationInput) (Evaluati
 	}
 
 	fields := map[string]string{
-		"mac_address":  strings.TrimSpace(input.MACAddress),
-		"hostname":     strings.TrimSpace(input.Hostname),
-		"vendor_class": strings.TrimSpace(input.VendorClass),
-		"switch_name":  strings.TrimSpace(input.SwitchName),
-		"interface":    strings.TrimSpace(input.Interface),
+		"mac_address":           strings.TrimSpace(input.MACAddress),
+		"hostname":              strings.TrimSpace(input.Hostname),
+		"vendor_class":          strings.TrimSpace(input.VendorClass),
+		"switch_id":             strings.TrimSpace(input.SwitchID),
+		"switch_name":           strings.TrimSpace(input.SwitchName),
+		"interface":             strings.TrimSpace(input.Interface),
+		"device_type":           strings.TrimSpace(input.DeviceType),
+		"authentication_method": strings.TrimSpace(input.AuthenticationMethod),
+		"trust_level":           strings.TrimSpace(input.TrustLevel),
+		"observation_source":    strings.TrimSpace(input.ObservationSource),
+		"sophos_username":       strings.TrimSpace(input.SophosUsername),
 	}
 
 	for _, policy := range policies {
@@ -167,11 +179,7 @@ func (s *Service) Evaluate(ctx context.Context, input EvaluationInput) (Evaluati
 		}, nil
 	}
 
-	return EvaluationResult{
-		Status: "unknown",
-		Action: "unknown",
-		Reason: "No policy matched",
-	}, nil
+	return EvaluationResult{Status: "unknown", Action: "unknown", Reason: "No policy matched"}, nil
 }
 
 func matches(operator, value, matchValue string) bool {

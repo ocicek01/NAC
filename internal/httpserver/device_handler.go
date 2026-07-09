@@ -20,6 +20,7 @@ type deviceService interface {
 	ListBySwitchAndIfIndex(ctx context.Context, switchID string, ifIndex int) ([]device.Device, error)
 	UpdateStatus(ctx context.Context, macAddress, status, approvedBy string, expiresAt time.Time, targetVLAN int) (device.Device, error)
 	AddIdentitySnapshot(ctx context.Context, snapshot device.IdentitySnapshot) (device.IdentitySnapshot, error)
+	RecordSophosIdentity(ctx context.Context, macAddress, username, ipAddress string, seenAt time.Time) error
 }
 
 type deviceStatusUpdateRequest struct {
@@ -37,6 +38,12 @@ type identitySnapshotRequest struct {
 	Attributes     map[string]any `json:"attributes"`
 	VerifiedAt     string         `json:"verified_at"`
 	ExpiresAt      string         `json:"expires_at"`
+}
+
+type sophosIdentityRequest struct {
+	Username  string `json:"username"`
+	IPAddress string `json:"ip_address"`
+	SeenAt    string `json:"seen_at"`
 }
 
 func registerDeviceRoutes(mux *http.ServeMux, service deviceService) {
@@ -132,6 +139,9 @@ func registerDeviceRoutes(mux *http.ServeMux, service deviceService) {
 			case "identity-snapshots":
 				handleIdentitySnapshotCreate(w, r, service, macAddress)
 				return
+			case "sophos-identity":
+				handleSophosIdentityUpdate(w, r, service, macAddress)
+				return
 			}
 		}
 
@@ -225,6 +235,31 @@ func handleIdentitySnapshotCreate(w http.ResponseWriter, r *http.Request, servic
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(snapshot)
+}
+
+func handleSophosIdentityUpdate(w http.ResponseWriter, r *http.Request, service deviceService, macAddress string) {
+	var req sophosIdentityRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json body", http.StatusBadRequest)
+		return
+	}
+
+	seenAt := time.Now().UTC()
+	if strings.TrimSpace(req.SeenAt) != "" {
+		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(req.SeenAt))
+		if err != nil {
+			http.Error(w, "seen_at must be RFC3339", http.StatusBadRequest)
+			return
+		}
+		seenAt = parsed.UTC()
+	}
+
+	if err := service.RecordSophosIdentity(r.Context(), macAddress, req.Username, req.IPAddress, seenAt); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func newUUID() string {

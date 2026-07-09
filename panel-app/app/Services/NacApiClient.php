@@ -103,6 +103,16 @@ class NacApiClient
         return $this->post('/api/v1/devices/'.rawurlencode($macAddress).'/identity-snapshots', $payload);
     }
 
+    public function portEvents(int $limit = 20): array
+    {
+        return $this->optionalGet('/api/v1/port-events?limit='.max(1, $limit));
+    }
+
+    public function auditLogs(int $limit = 20): array
+    {
+        return $this->optionalGet('/api/v1/audit-logs?limit='.max(1, $limit));
+    }
+
     public function switches(): array
     {
         return $this->get('/api/v1/switches');

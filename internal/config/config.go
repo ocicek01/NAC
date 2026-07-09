@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
@@ -83,9 +84,12 @@ type IdentityConfig struct {
 	LDAPBindDN         string
 	LDAPBindPassword   string
 	LDAPBaseDN         string
+	LDAPDeviceBaseDN   string
 	LDAPStaffGID       string
 	LDAPStudentGID     string
 	LDAPFacultyGID     string
+	LDAPWhitelistUIDs  []string
+	LDAPWhitelistMails []string
 	StaffTargetVLAN    int
 	StudentTargetVLAN  int
 	FacultyTargetVLAN  int
@@ -166,9 +170,12 @@ func Load() (Config, error) {
 			LDAPBindDN:         getEnv("LDAP_BIND_DN", ""),
 			LDAPBindPassword:   getEnv("LDAP_BIND_PASSWORD", ""),
 			LDAPBaseDN:         getEnv("LDAP_BASE_DN", ""),
+			LDAPDeviceBaseDN:   getEnv("LDAP_DEVICE_BASE_DN", ""),
 			LDAPStaffGID:       getEnv("LDAP_STAFF_GID", "501"),
 			LDAPStudentGID:     getEnv("LDAP_STUDENT_GID", "500"),
 			LDAPFacultyGID:     getEnv("LDAP_FACULTY_GID", "504"),
+			LDAPWhitelistUIDs:  getEnvAsCSV("LDAP_WHITELIST_UIDS"),
+			LDAPWhitelistMails: getEnvAsCSV("LDAP_WHITELIST_MAILS"),
 			StaffTargetVLAN:    getEnvAsInt("IDENTITY_STAFF_TARGET_VLAN", 0),
 			StudentTargetVLAN:  getEnvAsInt("IDENTITY_STUDENT_TARGET_VLAN", 0),
 			FacultyTargetVLAN:  getEnvAsInt("IDENTITY_FACULTY_TARGET_VLAN", 0),
@@ -249,4 +256,27 @@ func getEnvAsInt(key string, fallback int) int {
 	}
 
 	return parsed
+}
+
+func getEnvAsCSV(key string) []string {
+	value := os.Getenv(key)
+	if value == "" {
+		return nil
+	}
+
+	parts := strings.Split(value, ",")
+	items := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+		items = append(items, trimmed)
+	}
+
+	if len(items) == 0 {
+		return nil
+	}
+
+	return items
 }

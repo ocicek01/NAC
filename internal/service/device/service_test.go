@@ -44,7 +44,7 @@ func TestListBySwitchAndIfIndexFallsBackToObservedPortData(t *testing.T) {
 		},
 	}
 
-	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, switchPorts, portEndpoints, nil, nil, nil, 0, 0, 0, false, false, 0, 0, 0, false, 0)
+	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, switchPorts, portEndpoints, nil, nil, nil, nil, 0, 0, 0, false, false, 0, 0, 0, false, 0)
 
 	devices, err := service.ListBySwitchAndIfIndex(context.Background(), "sw-1", 32)
 	if err != nil {
@@ -106,7 +106,7 @@ func TestListBySwitchAndIfIndexFallsBackToRadiusSessionAndBindingData(t *testing
 		},
 	}
 
-	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, switchPorts, nil, sessions, bindings, nil, 0, 0, 0, false, false, 0, 0, 0, false, 0)
+	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, switchPorts, nil, sessions, bindings, nil, nil, 0, 0, 0, false, false, 0, 0, 0, false, 0)
 
 	devices, err := service.ListBySwitchAndIfIndex(context.Background(), "sw-1", 32)
 	if err != nil {
@@ -149,7 +149,7 @@ func TestListBySwitchAndIfIndexFallsBackToDHCPEventData(t *testing.T) {
 		},
 	}
 
-	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, switchPorts, nil, nil, nil, dhcpEvents, 0, 0, 0, false, false, 0, 0, 0, false, 0)
+	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, switchPorts, nil, nil, nil, dhcpEvents, nil, 0, 0, 0, false, false, 0, 0, 0, false, 0)
 
 	devices, err := service.ListBySwitchAndIfIndex(context.Background(), "sw-1", 32)
 	if err != nil {
@@ -185,7 +185,7 @@ func TestListBySwitchKeepsRealInventoryAndAppendsObservedFallbacks(t *testing.T)
 	}
 	portEndpoints := &stubPortEndpointResolver{}
 
-	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, switchPorts, portEndpoints, nil, nil, nil, 0, 0, 0, false, false, 0, 0, 0, false, 0)
+	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, switchPorts, portEndpoints, nil, nil, nil, nil, 0, 0, 0, false, false, 0, 0, 0, false, 0)
 
 	devices, err := service.ListBySwitch(context.Background(), "sw-1")
 	if err != nil {
@@ -231,6 +231,12 @@ func (s *stubDeviceRepository) UpdateStatus(ctx context.Context, macAddress, sta
 }
 func (s *stubDeviceRepository) AddIdentitySnapshot(ctx context.Context, snapshot devicedomain.IdentitySnapshot) (devicedomain.IdentitySnapshot, error) {
 	return snapshot, nil
+}
+func (s *stubDeviceRepository) AddObservation(ctx context.Context, observation devicedomain.Observation) (devicedomain.Observation, error) {
+	return observation, nil
+}
+func (s *stubDeviceRepository) UpdateSophosIdentity(ctx context.Context, macAddress, username, ipAddress string, seenAt time.Time) error {
+	return nil
 }
 func (s *stubDeviceRepository) UpdateEnforcementState(ctx context.Context, macAddress, action string, vlanID int, status, switchID string, ifIndex int, method string, enforcedAt time.Time) error {
 	return nil

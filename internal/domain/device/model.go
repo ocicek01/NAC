@@ -17,6 +17,15 @@ type Device struct {
 	ExpiresAt                   time.Time `json:"expires_at"`
 	PolicyAction                string    `json:"policy_action"`
 	PolicyReason                string    `json:"policy_reason"`
+	ClassificationMethod        string    `json:"classification_method"`
+	TrustLevel                  string    `json:"trust_level"`
+	AuthenticationMethod        string    `json:"authentication_method"`
+	AuthenticationStatus        string    `json:"authentication_status"`
+	SophosUsername              string    `json:"sophos_username"`
+	SophosLastIP                string    `json:"sophos_last_ip"`
+	SophosLastSeenAt            time.Time `json:"sophos_last_seen_at"`
+	LastPolicyDecision          string    `json:"last_policy_decision"`
+	LastPolicyEvaluatedAt       time.Time `json:"last_policy_evaluated_at"`
 	CurrentSwitchID             string    `json:"current_switch_id"`
 	CurrentSwitchName           string    `json:"current_switch_name"`
 	CurrentManagementIP         string    `json:"current_management_ip"`
@@ -31,6 +40,20 @@ type Device struct {
 	IdentitySource              string    `json:"identity_source"`
 	IdentityUsername            string    `json:"identity_username"`
 	IdentityFullName            string    `json:"identity_full_name"`
+	LDAPDeviceCN                string    `json:"ldap_device_cn"`
+	LDAPOwnerDN                 string    `json:"ldap_owner_dn"`
+	LDAPLocationDN              string    `json:"ldap_location_dn"`
+	LDAPOwnershipType           string    `json:"ldap_ownership_type"`
+	LDAPDepartment              string    `json:"ldap_department"`
+	LDAPAssetTag                string    `json:"ldap_asset_tag"`
+	LDAPPolicyName              string    `json:"ldap_policy_name"`
+	LDAPVendor                  string    `json:"ldap_vendor"`
+	LDAPModel                   string    `json:"ldap_model"`
+	LDAPDeviceStatus            string    `json:"ldap_device_status"`
+	LDAPVLANID                  int       `json:"ldap_vlan_id"`
+	LDAPVLANName                string    `json:"ldap_vlan_name"`
+	LDAPDefaultVLANID           int       `json:"ldap_default_vlan_id"`
+	LDAPDefaultVLANName         string    `json:"ldap_default_vlan_name"`
 	LastEnforcementAction       string    `json:"last_enforcement_action"`
 	LastEnforcementVLAN         int       `json:"last_enforcement_vlan"`
 	LastEnforcementStatus       string    `json:"last_enforcement_status"`
@@ -67,4 +90,34 @@ type IdentitySnapshot struct {
 	VerifiedAt     time.Time      `json:"verified_at"`
 	ExpiresAt      time.Time      `json:"expires_at"`
 	CreatedAt      time.Time      `json:"created_at"`
+}
+
+type Observation struct {
+	ID          string    `json:"id"`
+	DeviceID    string    `json:"device_id"`
+	MACAddress  string    `json:"mac_address"`
+	IPAddress   string    `json:"ip_address"`
+	SwitchID    string    `json:"switch_id"`
+	PortIfIndex int       `json:"port_ifindex"`
+	VLANID      int       `json:"vlan_id"`
+	Source      string    `json:"source"`
+	ObservedAt  time.Time `json:"observed_at"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+type AgentlessObservationInput struct {
+	MACAddress           string    `json:"mac_address"`
+	IPAddress            string    `json:"ip_address"`
+	Hostname             string    `json:"hostname"`
+	VendorClass          string    `json:"vendor_class"`
+	DeviceType           string    `json:"device_type"`
+	SwitchID             string    `json:"switch_id"`
+	SwitchName           string    `json:"switch_name"`
+	ManagementIP         string    `json:"management_ip"`
+	IfIndex              int       `json:"if_index"`
+	InterfaceName        string    `json:"interface_name"`
+	InterfaceDescription string    `json:"interface_description"`
+	SourceType           string    `json:"source_type"`
+	Confidence           string    `json:"confidence"`
+	ObservedAt           time.Time `json:"observed_at"`
 }

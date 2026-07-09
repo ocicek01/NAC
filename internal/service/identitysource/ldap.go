@@ -14,17 +14,19 @@ import (
 )
 
 type LDAPResolver struct {
-	host         string
-	bindDN       string
-	bindPassword string
-	baseDN       string
-	staffGID     string
-	studentGID   string
-	facultyGID   string
-	staffVLAN    int
-	studentVLAN  int
-	facultyVLAN  int
-	timeout      time.Duration
+	host           string
+	bindDN         string
+	bindPassword   string
+	baseDN         string
+	staffGID       string
+	studentGID     string
+	facultyGID     string
+	whitelistUIDs  map[string]struct{}
+	whitelistMails map[string]struct{}
+	staffVLAN      int
+	studentVLAN    int
+	facultyVLAN    int
+	timeout        time.Duration
 }
 
 func NewLDAPResolver(cfg config.IdentityConfig) *LDAPResolver {
@@ -36,17 +38,19 @@ func NewLDAPResolver(cfg config.IdentityConfig) *LDAPResolver {
 		timeout = 5 * time.Second
 	}
 	return &LDAPResolver{
-		host:         strings.TrimSpace(cfg.LDAPHost),
-		bindDN:       strings.TrimSpace(cfg.LDAPBindDN),
-		bindPassword: cfg.LDAPBindPassword,
-		baseDN:       strings.TrimSpace(cfg.LDAPBaseDN),
-		staffGID:     strings.TrimSpace(cfg.LDAPStaffGID),
-		studentGID:   strings.TrimSpace(cfg.LDAPStudentGID),
-		facultyGID:   strings.TrimSpace(cfg.LDAPFacultyGID),
-		staffVLAN:    cfg.StaffTargetVLAN,
-		studentVLAN:  cfg.StudentTargetVLAN,
-		facultyVLAN:  cfg.FacultyTargetVLAN,
-		timeout:      timeout,
+		host:           strings.TrimSpace(cfg.LDAPHost),
+		bindDN:         strings.TrimSpace(cfg.LDAPBindDN),
+		bindPassword:   cfg.LDAPBindPassword,
+		baseDN:         strings.TrimSpace(cfg.LDAPBaseDN),
+		staffGID:       strings.TrimSpace(cfg.LDAPStaffGID),
+		studentGID:     strings.TrimSpace(cfg.LDAPStudentGID),
+		facultyGID:     strings.TrimSpace(cfg.LDAPFacultyGID),
+		whitelistUIDs:  buildWhitelistSet(cfg.LDAPWhitelistUIDs),
+		whitelistMails: buildWhitelistSet(cfg.LDAPWhitelistMails),
+		staffVLAN:      cfg.StaffTargetVLAN,
+		studentVLAN:    cfg.StudentTargetVLAN,
+		facultyVLAN:    cfg.FacultyTargetVLAN,
+		timeout:        timeout,
 	}
 }
 
@@ -87,6 +91,12 @@ func (r *LDAPResolver) Resolve(ctx context.Context, identifier, password string)
 	}
 
 	entry := searchResp.Entries[0]
+	uid := strings.TrimSpace(entry.GetAttributeValue("uid"))
+	mail := strings.TrimSpace(entry.GetAttributeValue("mail"))
+	if !r.allowedByWhitelist(uid, mail) {
+		return nil, nil
+	}
+
 	userDN := entry.DN
 	if strings.TrimSpace(userDN) == "" {
 		return nil, nil
@@ -110,7 +120,7 @@ func (r *LDAPResolver) Resolve(ctx context.Context, identifier, password string)
 
 	attrs := map[string]any{
 		"gid_number": gid,
-		"mail":       strings.TrimSpace(entry.GetAttributeValue("mail")),
+		"mail":       mail,
 		"user_dn":    userDN,
 	}
 
@@ -118,8 +128,8 @@ func (r *LDAPResolver) Resolve(ctx context.Context, identifier, password string)
 		Matched:      true,
 		Source:       "ldap",
 		IdentityType: identityType,
-		ExternalID:   strings.TrimSpace(entry.GetAttributeValue("uid")),
-		Username:     strings.TrimSpace(entry.GetAttributeValue("uid")),
+		ExternalID:   uid,
+		Username:     uid,
 		FullName:     strings.TrimSpace(entry.GetAttributeValue("cn")),
 		TargetVLAN:   targetVLAN,
 		Attributes:   attrs,
@@ -145,4 +155,44 @@ func (r *LDAPResolver) dialURL() string {
 		return host
 	}
 	return "ldap://" + host
+}
+
+func (r *LDAPResolver) allowedByWhitelist(uid, mail string) bool {
+	if len(r.whitelistUIDs) == 0 && len(r.whitelistMails) == 0 {
+		return true
+	}
+
+	if _, ok := r.whitelistUIDs[normalizeWhitelistValue(uid)]; ok {
+		return true
+	}
+	if _, ok := r.whitelistMails[normalizeWhitelistValue(mail)]; ok {
+		return true
+	}
+
+	return false
+}
+
+func buildWhitelistSet(values []string) map[string]struct{} {
+	if len(values) == 0 {
+		return nil
+	}
+
+	set := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		normalized := normalizeWhitelistValue(value)
+		if normalized == "" {
+			continue
+		}
+		set[normalized] = struct{}{}
+	}
+
+	if len(set) == 0 {
+		return nil
+	}
+
+	return set
+}
+
+func normalizeWhitelistValue(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
 }

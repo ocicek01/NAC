@@ -22,6 +22,7 @@ import (
 	switchportdomain "nac/internal/domain/switchport"
 	"nac/internal/normalize"
 	enforcementservice "nac/internal/service/enforcement"
+	identitysource "nac/internal/service/identitysource"
 	policyservice "nac/internal/service/policy"
 )
 
@@ -71,6 +72,10 @@ type DHCPEventResolver interface {
 	FindLatestByMAC(ctx context.Context, macAddress string) (*dhcpevent.Event, error)
 }
 
+type LDAPDeviceResolver interface {
+	LookupByMAC(ctx context.Context, macAddress string) (*identitysource.LDAPDeviceRecord, error)
+}
+
 type Service struct {
 	repository           domain.Repository
 	policies             PolicyEvaluator
@@ -81,6 +86,7 @@ type Service struct {
 	sessions             SessionResolver
 	macIPBindings        MACIPBindingResolver
 	dhcpEvents           DHCPEventResolver
+	ldapDevices          LDAPDeviceResolver
 	registrationVLAN     int
 	guestVLAN            int
 	quarantineVLAN       int
@@ -117,7 +123,7 @@ type RadiusInventoryInput struct {
 	PolicyReasonOverride string
 }
 
-func NewService(logger *slog.Logger, repository domain.Repository, policies PolicyEvaluator, enforcement EnforcementRecorder, switchPorts SwitchPortResolver, portEndpoints PortEndpointResolver, sessions SessionResolver, macIPBindings MACIPBindingResolver, dhcpEvents DHCPEventResolver, registrationVLAN, guestVLAN, quarantineVLAN int, autoExecute bool, ipLearningEnabled bool, ipLearningWait, ipRecheck, portBounceDelay time.Duration, portBounceEnabled bool, maxMACCountForBounce int) *Service {
+func NewService(logger *slog.Logger, repository domain.Repository, policies PolicyEvaluator, enforcement EnforcementRecorder, switchPorts SwitchPortResolver, portEndpoints PortEndpointResolver, sessions SessionResolver, macIPBindings MACIPBindingResolver, dhcpEvents DHCPEventResolver, ldapDevices LDAPDeviceResolver, registrationVLAN, guestVLAN, quarantineVLAN int, autoExecute bool, ipLearningEnabled bool, ipLearningWait, ipRecheck, portBounceDelay time.Duration, portBounceEnabled bool, maxMACCountForBounce int) *Service {
 	return &Service{
 		repository:           repository,
 		policies:             policies,
@@ -128,6 +134,7 @@ func NewService(logger *slog.Logger, repository domain.Repository, policies Poli
 		sessions:             sessions,
 		macIPBindings:        macIPBindings,
 		dhcpEvents:           dhcpEvents,
+		ldapDevices:          ldapDevices,
 		registrationVLAN:     registrationVLAN,
 		guestVLAN:            guestVLAN,
 		quarantineVLAN:       quarantineVLAN,
@@ -142,7 +149,11 @@ func NewService(logger *slog.Logger, repository domain.Repository, policies Poli
 }
 
 func (s *Service) List(ctx context.Context) ([]domain.Device, error) {
-	return s.repository.List(ctx)
+	devices, err := s.repository.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return s.enrichLDAPDevices(ctx, devices), nil
 }
 
 func (s *Service) ListByMAC(ctx context.Context, macAddress string) ([]domain.Device, error) {
@@ -150,7 +161,11 @@ func (s *Service) ListByMAC(ctx context.Context, macAddress string) ([]domain.De
 	if macAddress == "" {
 		return []domain.Device{}, nil
 	}
-	return s.repository.ListByMAC(ctx, macAddress)
+	devices, err := s.repository.ListByMAC(ctx, macAddress)
+	if err != nil {
+		return nil, err
+	}
+	return s.enrichLDAPDevices(ctx, devices), nil
 }
 
 func (s *Service) ListBySwitch(ctx context.Context, switchID string) ([]domain.Device, error) {
@@ -159,7 +174,11 @@ func (s *Service) ListBySwitch(ctx context.Context, switchID string) ([]domain.D
 		return nil, err
 	}
 
-	return s.mergeObservedPortDevices(ctx, switchID, 0, devices)
+	devices, err = s.mergeObservedPortDevices(ctx, switchID, 0, devices)
+	if err != nil {
+		return nil, err
+	}
+	return s.enrichLDAPDevices(ctx, devices), nil
 }
 
 func (s *Service) ListBySwitchAndIfIndex(ctx context.Context, switchID string, ifIndex int) ([]domain.Device, error) {
@@ -172,7 +191,53 @@ func (s *Service) ListBySwitchAndIfIndex(ctx context.Context, switchID string, i
 		return nil, err
 	}
 
-	return s.mergeObservedPortDevices(ctx, switchID, ifIndex, devices)
+	devices, err = s.mergeObservedPortDevices(ctx, switchID, ifIndex, devices)
+	if err != nil {
+		return nil, err
+	}
+	return s.enrichLDAPDevices(ctx, devices), nil
+}
+
+func (s *Service) enrichLDAPDevices(ctx context.Context, devices []domain.Device) []domain.Device {
+	if s.ldapDevices == nil || len(devices) == 0 {
+		return devices
+	}
+
+	out := make([]domain.Device, 0, len(devices))
+	for _, device := range devices {
+		record, err := s.ldapDevices.LookupByMAC(ctx, device.MACAddress)
+		if err == nil && record != nil {
+			if strings.TrimSpace(record.CommonName) != "" {
+				device.LDAPDeviceCN = record.CommonName
+			}
+			device.LDAPOwnerDN = record.OwnerDN
+			device.LDAPLocationDN = record.LocationDN
+			device.LDAPOwnershipType = record.OwnershipType
+			device.LDAPDepartment = record.Department
+			device.LDAPAssetTag = record.AssetTag
+			device.LDAPPolicyName = record.PolicyName
+			device.LDAPVendor = record.Vendor
+			device.LDAPModel = record.Model
+			device.LDAPDeviceStatus = record.DeviceStatus
+			device.LDAPVLANID = record.VLANID
+			device.LDAPVLANName = record.VLANName
+			device.LDAPDefaultVLANID = record.DefaultVLANID
+			device.LDAPDefaultVLANName = record.DefaultVLANName
+
+			if strings.TrimSpace(device.DeviceType) == "" || strings.EqualFold(strings.TrimSpace(device.DeviceType), "unknown") {
+				device.DeviceType = record.DeviceType
+			}
+			if strings.TrimSpace(device.Description) == "" {
+				device.Description = record.Description
+			}
+			if strings.TrimSpace(device.CurrentIPAddress) == "" && strings.TrimSpace(record.IPAddress) != "" {
+				device.CurrentIPAddress = record.IPAddress
+			}
+		}
+		out = append(out, device)
+	}
+
+	return out
 }
 
 func (s *Service) mergeObservedPortDevices(ctx context.Context, switchID string, ifIndex int, devices []domain.Device) ([]domain.Device, error) {
@@ -442,6 +507,125 @@ func (s *Service) AddIdentitySnapshot(ctx context.Context, snapshot domain.Ident
 		snapshot.CreatedAt = time.Now().UTC()
 	}
 	return s.repository.AddIdentitySnapshot(ctx, snapshot)
+}
+
+func (s *Service) ObserveAgentlessEvent(ctx context.Context, input domain.AgentlessObservationInput) (domain.Device, error) {
+	macAddress := normalize.MACAddress(input.MACAddress)
+	if macAddress == "" {
+		return domain.Device{}, fmt.Errorf("invalid mac address")
+	}
+	if strings.TrimSpace(input.SwitchID) == "" {
+		return domain.Device{}, fmt.Errorf("switch id is required")
+	}
+	if input.IfIndex <= 0 {
+		return domain.Device{}, fmt.Errorf("if_index must be greater than zero")
+	}
+
+	observedAt := input.ObservedAt
+	if observedAt.IsZero() {
+		observedAt = time.Now().UTC()
+	} else {
+		observedAt = observedAt.UTC()
+	}
+	now := time.Now().UTC()
+	trustLevel := deriveTrustLevel(strings.TrimSpace(input.IPAddress), strings.TrimSpace(input.Hostname), strings.TrimSpace(input.DeviceType))
+	status, policyAction, policyReason := s.evaluatePolicy(ctx, policyservice.EvaluationInput{
+		MACAddress:           macAddress,
+		Hostname:             strings.TrimSpace(input.Hostname),
+		VendorClass:          strings.TrimSpace(input.VendorClass),
+		SwitchID:             strings.TrimSpace(input.SwitchID),
+		SwitchName:           strings.TrimSpace(input.SwitchName),
+		Interface:            strings.TrimSpace(input.InterfaceName),
+		DeviceType:           strings.TrimSpace(input.DeviceType),
+		AuthenticationMethod: "agentless",
+		TrustLevel:           trustLevel,
+		ObservationSource:    strings.TrimSpace(input.SourceType),
+	}, strings.TrimSpace(input.SwitchID), false, "", "", "Agentless port observation")
+
+	device := domain.Device{
+		ID:                          uuid.NewString(),
+		MACAddress:                  macAddress,
+		CurrentIPAddress:            strings.TrimSpace(input.IPAddress),
+		DeviceType:                  defaultString(strings.TrimSpace(input.DeviceType), "unknown"),
+		Hostname:                    strings.TrimSpace(input.Hostname),
+		VendorClass:                 strings.TrimSpace(input.VendorClass),
+		Status:                      status,
+		PolicyAction:                policyAction,
+		PolicyReason:                policyReason,
+		ClassificationMethod:        "policy-engine",
+		TrustLevel:                  trustLevel,
+		AuthenticationMethod:        "agentless",
+		AuthenticationStatus:        "not_attempted",
+		LastPolicyDecision:          policyAction,
+		LastPolicyEvaluatedAt:       observedAt,
+		CurrentSwitchID:             strings.TrimSpace(input.SwitchID),
+		CurrentSwitchName:           strings.TrimSpace(input.SwitchName),
+		CurrentManagementIP:         strings.TrimSpace(input.ManagementIP),
+		CurrentIfIndex:              input.IfIndex,
+		CurrentInterfaceName:        strings.TrimSpace(input.InterfaceName),
+		CurrentInterfaceDescription: strings.TrimSpace(input.InterfaceDescription),
+		CurrentSourceType:           defaultString(strings.TrimSpace(input.SourceType), "agentless-port-observation"),
+		CurrentConfidence:           defaultString(strings.TrimSpace(input.Confidence), "observed"),
+		FirstSeenAt:                 observedAt,
+		LastSeenAt:                  observedAt,
+		CreatedAt:                   now,
+		UpdatedAt:                   now,
+	}
+
+	stored, err := s.repository.Upsert(ctx, device)
+	if err != nil {
+		return domain.Device{}, err
+	}
+
+	_, err = s.repository.AddObservation(ctx, domain.Observation{
+		ID:          uuid.NewString(),
+		DeviceID:    stored.ID,
+		MACAddress:  stored.MACAddress,
+		IPAddress:   stored.CurrentIPAddress,
+		SwitchID:    stored.CurrentSwitchID,
+		PortIfIndex: stored.CurrentIfIndex,
+		VLANID:      0,
+		Source:      stored.CurrentSourceType,
+		ObservedAt:  observedAt,
+		CreatedAt:   now,
+	})
+	if err != nil {
+		return domain.Device{}, err
+	}
+
+	if s.enforcement != nil && !s.shouldSkipDecisionInsert(ctx, stored) {
+		decision, err := s.enforcement.RecordDryRun(ctx, enforcementservice.Input{
+			MACAddress:           stored.MACAddress,
+			Hostname:             stored.Hostname,
+			PolicyAction:         stored.PolicyAction,
+			PolicyReason:         stored.PolicyReason,
+			SourceType:           stored.CurrentSourceType,
+			SwitchID:             stored.CurrentSwitchID,
+			SwitchName:           stored.CurrentSwitchName,
+			ManagementIP:         stored.CurrentManagementIP,
+			BridgePort:           stored.CurrentBridgePort,
+			IfIndex:              stored.CurrentIfIndex,
+			InterfaceName:        stored.CurrentInterfaceName,
+			InterfaceDescription: stored.CurrentInterfaceDescription,
+		})
+		if err == nil {
+			stored.LastPolicyDecision = decision.DecisionAction
+			s.maybeAutoExecute(ctx, stored, decision)
+		}
+	}
+
+	return stored, nil
+}
+
+func (s *Service) RecordSophosIdentity(ctx context.Context, macAddress, username, ipAddress string, seenAt time.Time) error {
+	macAddress = normalize.MACAddress(macAddress)
+	if macAddress == "" {
+		return fmt.Errorf("invalid mac address")
+	}
+	if seenAt.IsZero() {
+		seenAt = time.Now().UTC()
+	}
+	return s.repository.UpdateSophosIdentity(ctx, macAddress, strings.TrimSpace(username), strings.TrimSpace(ipAddress), seenAt.UTC())
 }
 
 func (s *Service) executeStatusEnforcement(ctx context.Context, device domain.Device, targetVLAN int) error {
@@ -1144,4 +1328,21 @@ func (s *Service) logError(msg string, args ...any) {
 		return
 	}
 	log.Println(append([]any{msg}, args...)...)
+}
+
+func deriveTrustLevel(ipAddress, hostname, deviceType string) string {
+	if strings.TrimSpace(deviceType) != "" && !strings.EqualFold(strings.TrimSpace(deviceType), "unknown") && strings.TrimSpace(ipAddress) != "" && strings.TrimSpace(hostname) != "" {
+		return "medium"
+	}
+	if strings.TrimSpace(ipAddress) != "" || strings.TrimSpace(hostname) != "" {
+		return "low"
+	}
+	return "unknown"
+}
+
+func defaultString(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return strings.TrimSpace(value)
 }

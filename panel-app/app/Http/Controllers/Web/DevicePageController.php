@@ -24,8 +24,19 @@ class DevicePageController extends Controller
             ])
             ->values();
 
+        $portEvents = collect($this->nacApiClient->portEvents(20));
+        $auditLogs = collect($this->nacApiClient->auditLogs(20));
+
         return view('devices.index', [
             'devices' => $devices,
+            'portEvents' => $portEvents,
+            'auditLogs' => $auditLogs,
+            'summary' => [
+                'device_count' => $devices->count(),
+                'pending_count' => $devices->where('status', 'pending')->count(),
+                'authenticated_count' => $devices->filter(fn (array $device) => filled($device['sophos_username'] ?? null))->count(),
+                'observed_count' => $portEvents->count(),
+            ],
         ]);
     }
 
