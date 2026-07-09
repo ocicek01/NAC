@@ -47,6 +47,7 @@ var deviceSelectColumns = `
 			LIMIT 1
 		), ''),
 		COALESCE(device_type, 'unknown'),
+		COALESCE(registered_vendor, ''),
 		COALESCE(label, ''),
 		COALESCE(description, ''),
 		hostname,
@@ -104,6 +105,17 @@ var deviceSelectColumns = `
 			ORDER BY dis.verified_at DESC, dis.created_at DESC
 			LIMIT 1
 		), ''),
+		COALESCE(registered_owner, ''),
+		COALESCE(owner_username, ''),
+		COALESCE(owner_department, ''),
+		COALESCE(owner_role, ''),
+		COALESCE(default_vlan_id, 0),
+		COALESCE(default_vlan_name, ''),
+		COALESCE(assigned_policy, ''),
+		COALESCE(enrichment_source, ''),
+		COALESCE(enrichment_status, ''),
+		COALESCE(enrichment_error, ''),
+		COALESCE(enriched_at, '0001-01-01T00:00:00Z'::timestamptz),
 		COALESCE((
 			SELECT policy_action
 			FROM enforcement_state es
@@ -277,6 +289,7 @@ var deviceListColumns = `
 		mac_address,
 		'',
 		COALESCE(device_type, 'unknown'),
+		COALESCE(registered_vendor, ''),
 		COALESCE(label, ''),
 		COALESCE(description, ''),
 		COALESCE(hostname, ''),
@@ -307,9 +320,17 @@ var deviceListColumns = `
 		COALESCE(current_source_type, ''),
 		COALESCE(current_confidence, ''),
 		'',
-		'',
-		'',
-		'',
+		COALESCE(registered_owner, ''),
+		COALESCE(owner_username, ''),
+		COALESCE(owner_department, ''),
+		COALESCE(owner_role, ''),
+		COALESCE(default_vlan_id, 0),
+		COALESCE(default_vlan_name, ''),
+		COALESCE(assigned_policy, ''),
+		COALESCE(enrichment_source, ''),
+		COALESCE(enrichment_status, ''),
+		COALESCE(enrichment_error, ''),
+		COALESCE(enriched_at, '0001-01-01T00:00:00Z'::timestamptz),
 		COALESCE(last_enforcement_action, ''),
 		COALESCE(last_enforcement_vlan, 0),
 		COALESCE(last_enforcement_status, ''),
@@ -353,6 +374,7 @@ func scanDevice(scanner interface {
 		&item.MACAddress,
 		&item.CurrentIPAddress,
 		&item.DeviceType,
+		&item.RegisteredVendor,
 		&item.Label,
 		&item.Description,
 		&item.Hostname,
@@ -386,6 +408,17 @@ func scanDevice(scanner interface {
 		&item.IdentitySource,
 		&item.IdentityUsername,
 		&item.IdentityFullName,
+		&item.RegisteredOwner,
+		&item.OwnerUsername,
+		&item.OwnerDepartment,
+		&item.OwnerRole,
+		&item.DefaultVLANID,
+		&item.DefaultVLANName,
+		&item.AssignedPolicy,
+		&item.EnrichmentSource,
+		&item.EnrichmentStatus,
+		&item.EnrichmentError,
+		&item.EnrichedAt,
 		&item.LastEnforcementAction,
 		&item.LastEnforcementVLAN,
 		&item.LastEnforcementStatus,
@@ -1085,19 +1118,71 @@ func (r *PostgresRepository) AddObservation(ctx context.Context, observation dom
 	return observation, nil
 }
 
+func (r *PostgresRepository) UpdateEnrichment(ctx context.Context, update domain.EnrichmentUpdate) (domain.Device, error) {
+	query := "UPDATE devices\n" +
+		"SET device_type = CASE WHEN $2 <> '' THEN $2 ELSE device_type END,\n" +
+		"    registered_vendor = CASE WHEN $3 <> '' THEN $3 ELSE registered_vendor END,\n" +
+		"    description = CASE WHEN $4 <> '' THEN $4 ELSE description END,\n" +
+		"    registered_owner = CASE WHEN $5 <> '' THEN $5 ELSE registered_owner END,\n" +
+		"    owner_username = CASE WHEN $6 <> '' THEN $6 ELSE owner_username END,\n" +
+		"    owner_department = CASE WHEN $7 <> '' THEN $7 ELSE owner_department END,\n" +
+		"    owner_role = CASE WHEN $8 <> '' THEN $8 ELSE owner_role END,\n" +
+		"    default_vlan_id = $9,\n" +
+		"    default_vlan_name = CASE WHEN $10 <> '' THEN $10 ELSE default_vlan_name END,\n" +
+		"    assigned_policy = CASE WHEN $11 <> '' THEN $11 ELSE assigned_policy END,\n" +
+		"    trust_level = CASE WHEN $12 <> '' THEN $12 ELSE trust_level END,\n" +
+		"    enrichment_source = $13,\n" +
+		"    enrichment_status = $14,\n" +
+		"    enrichment_error = $15,\n" +
+		"    enriched_at = $16,\n" +
+		"    policy_action = $17,\n" +
+		"    policy_reason = $18,\n" +
+		"    last_policy_decision = $19,\n" +
+		"    last_policy_evaluated_at = $20,\n" +
+		"    status = $21,\n" +
+		"    classification_method = CASE WHEN $22 <> '' THEN $22 ELSE classification_method END,\n" +
+		"    updated_at = NOW()\n" +
+		"WHERE " + normalizedMACExpression("mac_address") + " = " + normalizedMACExpression("$1") + "\n" +
+		"RETURNING " + deviceSelectColumns
+
+	return scanDevice(r.pool.QueryRow(
+		ctx,
+		query,
+		update.MACAddress,
+		strings.TrimSpace(update.DeviceType),
+		strings.TrimSpace(update.RegisteredVendor),
+		strings.TrimSpace(update.Description),
+		strings.TrimSpace(update.RegisteredOwner),
+		strings.TrimSpace(update.OwnerUsername),
+		strings.TrimSpace(update.OwnerDepartment),
+		strings.TrimSpace(update.OwnerRole),
+		update.DefaultVLANID,
+		strings.TrimSpace(update.DefaultVLANName),
+		strings.TrimSpace(update.AssignedPolicy),
+		strings.TrimSpace(update.TrustLevel),
+		strings.TrimSpace(update.EnrichmentSource),
+		strings.TrimSpace(update.EnrichmentStatus),
+		strings.TrimSpace(update.EnrichmentError),
+		nullableTime(update.EnrichedAt),
+		strings.TrimSpace(update.PolicyAction),
+		strings.TrimSpace(update.PolicyReason),
+		strings.TrimSpace(update.LastPolicyDecision),
+		nullableTime(update.LastPolicyEvaluatedAt),
+		strings.TrimSpace(update.Status),
+		strings.TrimSpace(update.ClassificationMethod),
+	))
+}
+
 func (r *PostgresRepository) UpdateSophosIdentity(ctx context.Context, macAddress, username, ipAddress string, seenAt time.Time) error {
-	_, err := r.pool.Exec(ctx, `
-		UPDATE devices
-		SET sophos_username = $2,
-			sophos_last_ip = NULLIF($3, '')::inet,
-			sophos_last_seen_at = $4,
-			authentication_status = CASE
-				WHEN $2 <> '' THEN 'captive-authenticated'
-				ELSE authentication_status
-			END,
-			updated_at = NOW()
-		WHERE `+normalizedMACExpression("mac_address")+` = `+normalizedMACExpression("$1")+`
-	`, macAddress, strings.TrimSpace(username), strings.TrimSpace(ipAddress), nullableTime(seenAt))
+	query := "UPDATE devices\n" +
+		"SET sophos_username = $2,\n" +
+		"    sophos_last_ip = NULLIF($3, '')::inet,\n" +
+		"    sophos_last_seen_at = $4,\n" +
+		"    authentication_status = CASE WHEN $2 <> '' THEN 'captive-authenticated' ELSE authentication_status END,\n" +
+		"    updated_at = NOW()\n" +
+		"WHERE " + normalizedMACExpression("mac_address") + " = " + normalizedMACExpression("$1")
+
+	_, err := r.pool.Exec(ctx, query, macAddress, strings.TrimSpace(username), strings.TrimSpace(ipAddress), nullableTime(seenAt))
 	return err
 }
 

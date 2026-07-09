@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,6 +22,7 @@ import (
 	sessiondomain "nac/internal/domain/session"
 	switchportdomain "nac/internal/domain/switchport"
 	"nac/internal/normalize"
+	auditlogservice "nac/internal/service/auditlog"
 	enforcementservice "nac/internal/service/enforcement"
 	identitysource "nac/internal/service/identitysource"
 	policyservice "nac/internal/service/policy"
@@ -32,6 +34,11 @@ const (
 	reasonDerivedObservation         = "Derived from current observation"
 	reasonRadiusObservation          = "Derived from RADIUS observation"
 	autoEnforcementSuppressionWindow = 2 * time.Minute
+	enrichmentSourceOpenLDAP         = "openldap_device_registry"
+	enrichmentStatusPending          = "pending"
+	enrichmentStatusFound            = "found"
+	enrichmentStatusNotFound         = "not_found"
+	enrichmentStatusLookupFailed     = "lookup_failed"
 )
 
 type PolicyEvaluator interface {
@@ -80,6 +87,7 @@ type Service struct {
 	repository           domain.Repository
 	policies             PolicyEvaluator
 	enforcement          EnforcementRecorder
+	audit                *auditlogservice.Service
 	logger               *slog.Logger
 	switchPorts          SwitchPortResolver
 	portEndpoints        PortEndpointResolver
@@ -97,6 +105,9 @@ type Service struct {
 	portBounceEnabled    bool
 	portBounceDelay      time.Duration
 	maxMACCountForBounce int
+	enrichmentQueue      chan string
+	enrichmentMu         sync.Mutex
+	enrichmentQueued     map[string]struct{}
 }
 
 const (
@@ -123,11 +134,12 @@ type RadiusInventoryInput struct {
 	PolicyReasonOverride string
 }
 
-func NewService(logger *slog.Logger, repository domain.Repository, policies PolicyEvaluator, enforcement EnforcementRecorder, switchPorts SwitchPortResolver, portEndpoints PortEndpointResolver, sessions SessionResolver, macIPBindings MACIPBindingResolver, dhcpEvents DHCPEventResolver, ldapDevices LDAPDeviceResolver, registrationVLAN, guestVLAN, quarantineVLAN int, autoExecute bool, ipLearningEnabled bool, ipLearningWait, ipRecheck, portBounceDelay time.Duration, portBounceEnabled bool, maxMACCountForBounce int) *Service {
-	return &Service{
+func NewService(logger *slog.Logger, repository domain.Repository, policies PolicyEvaluator, enforcement EnforcementRecorder, switchPorts SwitchPortResolver, portEndpoints PortEndpointResolver, sessions SessionResolver, macIPBindings MACIPBindingResolver, dhcpEvents DHCPEventResolver, ldapDevices LDAPDeviceResolver, audit *auditlogservice.Service, registrationVLAN, guestVLAN, quarantineVLAN int, autoExecute bool, ipLearningEnabled bool, ipLearningWait, ipRecheck, portBounceDelay time.Duration, portBounceEnabled bool, maxMACCountForBounce int) *Service {
+	service := &Service{
 		repository:           repository,
 		policies:             policies,
 		enforcement:          enforcement,
+		audit:                audit,
 		logger:               logger,
 		switchPorts:          switchPorts,
 		portEndpoints:        portEndpoints,
@@ -145,7 +157,11 @@ func NewService(logger *slog.Logger, repository domain.Repository, policies Poli
 		portBounceEnabled:    portBounceEnabled,
 		portBounceDelay:      portBounceDelay,
 		maxMACCountForBounce: maxMACCountForBounce,
+		enrichmentQueue:      make(chan string, 256),
+		enrichmentQueued:     map[string]struct{}{},
 	}
+	service.startEnrichmentWorkers()
+	return service
 }
 
 func (s *Service) List(ctx context.Context, limit, offset int) ([]domain.Device, error) {
@@ -219,6 +235,18 @@ func (s *Service) enrichLDAPDevices(ctx context.Context, devices []domain.Device
 			if strings.TrimSpace(record.CommonName) != "" {
 				device.LDAPDeviceCN = record.CommonName
 			}
+			device.RegisteredVendor = firstNonEmpty(device.RegisteredVendor, record.Vendor)
+			device.RegisteredOwner = firstNonEmpty(device.RegisteredOwner, record.OwnerName, record.OwnerDN)
+			device.OwnerUsername = firstNonEmpty(device.OwnerUsername, record.OwnerUsername)
+			device.OwnerDepartment = firstNonEmpty(device.OwnerDepartment, record.Department)
+			device.OwnerRole = firstNonEmpty(device.OwnerRole, record.OwnerRole)
+			if device.DefaultVLANID == 0 {
+				device.DefaultVLANID = record.DefaultVLANID
+			}
+			device.DefaultVLANName = firstNonEmpty(device.DefaultVLANName, record.DefaultVLANName)
+			device.AssignedPolicy = firstNonEmpty(device.AssignedPolicy, record.PolicyName)
+			device.EnrichmentSource = firstNonEmpty(device.EnrichmentSource, enrichmentSourceOpenLDAP)
+			device.EnrichmentStatus = firstNonEmpty(device.EnrichmentStatus, enrichmentStatusFound)
 			device.LDAPOwnerDN = record.OwnerDN
 			device.LDAPLocationDN = record.LocationDN
 			device.LDAPOwnershipType = record.OwnershipType
@@ -585,6 +613,7 @@ func (s *Service) ObserveAgentlessEvent(ctx context.Context, input domain.Agentl
 	if err != nil {
 		return domain.Device{}, err
 	}
+	s.enqueueEnrichment(stored.MACAddress)
 
 	_, err = s.repository.AddObservation(ctx, domain.Observation{
 		ID:          uuid.NewString(),
@@ -624,6 +653,195 @@ func (s *Service) ObserveAgentlessEvent(ctx context.Context, input domain.Agentl
 	}
 
 	return stored, nil
+}
+
+func (s *Service) startEnrichmentWorkers() {
+	if s == nil || s.ldapDevices == nil || s.enrichmentQueue == nil {
+		return
+	}
+	for i := 0; i < 2; i++ {
+		go s.runEnrichmentWorker()
+	}
+}
+
+func (s *Service) enqueueEnrichment(macAddress string) {
+	if s == nil || s.ldapDevices == nil || s.enrichmentQueue == nil {
+		return
+	}
+	macAddress = normalize.MACAddress(macAddress)
+	if macAddress == "" {
+		return
+	}
+	s.enrichmentMu.Lock()
+	if _, ok := s.enrichmentQueued[macAddress]; ok {
+		s.enrichmentMu.Unlock()
+		return
+	}
+	s.enrichmentQueued[macAddress] = struct{}{}
+	s.enrichmentMu.Unlock()
+
+	select {
+	case s.enrichmentQueue <- macAddress:
+	default:
+		s.enrichmentMu.Lock()
+		delete(s.enrichmentQueued, macAddress)
+		s.enrichmentMu.Unlock()
+		s.logInfo("device enrichment queue is full", "mac_address", macAddress)
+	}
+}
+
+func (s *Service) runEnrichmentWorker() {
+	for macAddress := range s.enrichmentQueue {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = s.EnrichDeviceMetadata(ctx, macAddress)
+		cancel()
+		s.enrichmentMu.Lock()
+		delete(s.enrichmentQueued, macAddress)
+		s.enrichmentMu.Unlock()
+	}
+}
+
+func (s *Service) EnrichDeviceMetadata(ctx context.Context, macAddress string) error {
+	if s == nil || s.repository == nil || s.ldapDevices == nil {
+		return nil
+	}
+	macAddress = normalize.MACAddress(macAddress)
+	if macAddress == "" {
+		return nil
+	}
+	devices, err := s.repository.ListByMAC(ctx, macAddress)
+	if err != nil {
+		return err
+	}
+	if len(devices) == 0 {
+		return nil
+	}
+	current := devices[0]
+	now := time.Now().UTC()
+	update := domain.EnrichmentUpdate{
+		MACAddress:            macAddress,
+		EnrichmentSource:      enrichmentSourceOpenLDAP,
+		EnrichedAt:            now,
+		ClassificationMethod:  defaultString(current.ClassificationMethod, "policy-engine"),
+		LastPolicyEvaluatedAt: now,
+	}
+
+	record, lookupErr := s.ldapDevices.LookupByMAC(ctx, macAddress)
+	if lookupErr != nil {
+		update.EnrichmentStatus = enrichmentStatusLookupFailed
+		update.EnrichmentError = strings.TrimSpace(lookupErr.Error())
+		update.Status = current.Status
+		update.PolicyAction = current.PolicyAction
+		update.PolicyReason = current.PolicyReason
+		update.LastPolicyDecision = current.LastPolicyDecision
+		if _, err := s.repository.UpdateEnrichment(ctx, update); err != nil {
+			return err
+		}
+		if s.audit != nil {
+			_ = s.audit.Record(ctx, "device_enrichment_failed", "error", "device", current.ID, current.CurrentSwitchID, macAddress, map[string]any{
+				"enrichment_source": enrichmentSourceOpenLDAP,
+				"enrichment_status": enrichmentStatusLookupFailed,
+				"error":             update.EnrichmentError,
+			})
+		}
+		return lookupErr
+	}
+
+	update.EnrichmentStatus = enrichmentStatusNotFound
+	update.EnrichmentError = ""
+	if record != nil {
+		update = s.applyLDAPDeviceRecord(update, *record)
+		update.EnrichmentStatus = enrichmentStatusFound
+	}
+
+	status, policyAction, policyReason := s.evaluatePolicy(ctx, policyservice.EvaluationInput{
+		MACAddress:        current.MACAddress,
+		Hostname:          firstNonEmpty(current.Hostname, update.LDAPDeviceCN),
+		VendorClass:       current.VendorClass,
+		SwitchID:          current.CurrentSwitchID,
+		SwitchName:        current.CurrentSwitchName,
+		Interface:         current.CurrentInterfaceName,
+		DeviceType:        firstNonEmpty(update.DeviceType, current.DeviceType),
+		TrustLevel:        deriveMetadataTrustLevel(current.TrustLevel, update.EnrichmentStatus, update.OwnerUsername, update.DeviceType),
+		ObservationSource: current.CurrentSourceType,
+		OwnerUsername:     update.OwnerUsername,
+		OwnerDepartment:   update.OwnerDepartment,
+		OwnerRole:         update.OwnerRole,
+		AssignedPolicy:    update.AssignedPolicy,
+		RegisteredVendor:  update.RegisteredVendor,
+		DefaultVLANID:     update.DefaultVLANID,
+		EnrichmentSource:  update.EnrichmentSource,
+		EnrichmentStatus:  update.EnrichmentStatus,
+	}, current.CurrentSwitchID, false, "", "", "Device registry enrichment")
+	status, policyAction, policyReason = s.applyUnknownDeviceGuard(update.EnrichmentStatus, status, policyAction, policyReason)
+	update.TrustLevel = deriveMetadataTrustLevel(current.TrustLevel, update.EnrichmentStatus, update.OwnerUsername, update.DeviceType)
+	update.Status = status
+	update.PolicyAction = policyAction
+	update.PolicyReason = policyReason
+	update.LastPolicyDecision = policyAction
+
+	updated, err := s.repository.UpdateEnrichment(ctx, update)
+	if err != nil {
+		return err
+	}
+	if s.audit != nil {
+		action := "device_enrichment_missing"
+		statusValue := "warning"
+		if update.EnrichmentStatus == enrichmentStatusFound {
+			action = "device_enrichment_succeeded"
+			statusValue = "success"
+		}
+		_ = s.audit.Record(ctx, action, statusValue, "device", updated.ID, updated.CurrentSwitchID, updated.MACAddress, map[string]any{
+			"enrichment_source": update.EnrichmentSource,
+			"enrichment_status": update.EnrichmentStatus,
+			"owner_username":    update.OwnerUsername,
+			"owner_department":  update.OwnerDepartment,
+			"owner_role":        update.OwnerRole,
+			"default_vlan_id":   update.DefaultVLANID,
+			"assigned_policy":   update.AssignedPolicy,
+			"trust_level":       update.TrustLevel,
+			"policy_action":     update.PolicyAction,
+		})
+	}
+	return nil
+}
+
+func (s *Service) applyLDAPDeviceRecord(update domain.EnrichmentUpdate, record identitysource.LDAPDeviceRecord) domain.EnrichmentUpdate {
+	update.DeviceType = defaultString(record.DeviceType, update.DeviceType)
+	update.RegisteredVendor = strings.TrimSpace(record.Vendor)
+	update.Description = strings.TrimSpace(record.Description)
+	update.RegisteredOwner = firstNonEmpty(record.OwnerName, record.OwnerDN)
+	update.OwnerUsername = strings.TrimSpace(record.OwnerUsername)
+	update.OwnerDepartment = strings.TrimSpace(record.Department)
+	update.OwnerRole = strings.TrimSpace(record.OwnerRole)
+	update.DefaultVLANID = record.DefaultVLANID
+	update.DefaultVLANName = strings.TrimSpace(record.DefaultVLANName)
+	update.AssignedPolicy = strings.TrimSpace(record.PolicyName)
+	update.LDAPDeviceCN = strings.TrimSpace(record.CommonName)
+	update.LDAPOwnerDN = strings.TrimSpace(record.OwnerDN)
+	update.LDAPLocationDN = strings.TrimSpace(record.LocationDN)
+	update.LDAPOwnershipType = strings.TrimSpace(record.OwnershipType)
+	update.LDAPDepartment = strings.TrimSpace(record.Department)
+	update.LDAPAssetTag = strings.TrimSpace(record.AssetTag)
+	update.LDAPPolicyName = strings.TrimSpace(record.PolicyName)
+	update.LDAPVendor = strings.TrimSpace(record.Vendor)
+	update.LDAPModel = strings.TrimSpace(record.Model)
+	update.LDAPDeviceStatus = strings.TrimSpace(record.DeviceStatus)
+	update.LDAPVLANID = record.VLANID
+	update.LDAPVLANName = strings.TrimSpace(record.VLANName)
+	update.LDAPDefaultVLANID = record.DefaultVLANID
+	update.LDAPDefaultVLANName = strings.TrimSpace(record.DefaultVLANName)
+	return update
+}
+
+func (s *Service) applyUnknownDeviceGuard(enrichmentStatus, status, policyAction, policyReason string) (string, string, string) {
+	if enrichmentStatus == enrichmentStatusFound {
+		return status, policyAction, policyReason
+	}
+	if strings.EqualFold(strings.TrimSpace(policyAction), "active") {
+		return "unknown", "unknown", "Device registry enrichment missing"
+	}
+	return status, policyAction, policyReason
 }
 
 func (s *Service) RecordSophosIdentity(ctx context.Context, macAddress, username, ipAddress string, seenAt time.Time) error {
@@ -1347,6 +1565,28 @@ func deriveTrustLevel(ipAddress, hostname, deviceType string) string {
 		return "low"
 	}
 	return "unknown"
+}
+
+func deriveMetadataTrustLevel(current, enrichmentStatus, ownerUsername, deviceType string) string {
+	if strings.EqualFold(strings.TrimSpace(enrichmentStatus), enrichmentStatusFound) && strings.TrimSpace(ownerUsername) != "" && strings.TrimSpace(deviceType) != "" && !strings.EqualFold(strings.TrimSpace(deviceType), "unknown") {
+		return "high"
+	}
+	if strings.EqualFold(strings.TrimSpace(enrichmentStatus), enrichmentStatusFound) {
+		return "medium"
+	}
+	if strings.TrimSpace(current) != "" {
+		return strings.TrimSpace(current)
+	}
+	return "unknown"
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func defaultString(value, fallback string) string {

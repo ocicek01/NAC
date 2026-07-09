@@ -2,6 +2,7 @@ package policy
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,6 +29,14 @@ type EvaluationInput struct {
 	TrustLevel           string
 	ObservationSource    string
 	SophosUsername       string
+	OwnerUsername        string
+	OwnerDepartment      string
+	OwnerRole            string
+	AssignedPolicy       string
+	RegisteredVendor     string
+	DefaultVLANID        int
+	EnrichmentSource     string
+	EnrichmentStatus     string
 }
 
 type EvaluationResult struct {
@@ -164,6 +173,14 @@ func (s *Service) Evaluate(ctx context.Context, input EvaluationInput) (Evaluati
 		"trust_level":           strings.TrimSpace(input.TrustLevel),
 		"observation_source":    strings.TrimSpace(input.ObservationSource),
 		"sophos_username":       strings.TrimSpace(input.SophosUsername),
+		"owner_username":        strings.TrimSpace(input.OwnerUsername),
+		"owner_department":      strings.TrimSpace(input.OwnerDepartment),
+		"owner_role":            strings.TrimSpace(input.OwnerRole),
+		"assigned_policy":       strings.TrimSpace(input.AssignedPolicy),
+		"registered_vendor":     strings.TrimSpace(input.RegisteredVendor),
+		"default_vlan_id":       strconv.Itoa(input.DefaultVLANID),
+		"enrichment_source":     strings.TrimSpace(input.EnrichmentSource),
+		"enrichment_status":     strings.TrimSpace(input.EnrichmentStatus),
 	}
 
 	for _, policy := range policies {

@@ -7,6 +7,7 @@ type Device struct {
 	MACAddress                  string    `json:"mac_address"`
 	CurrentIPAddress            string    `json:"current_ip_address"`
 	DeviceType                  string    `json:"device_type"`
+	RegisteredVendor            string    `json:"registered_vendor"`
 	Label                       string    `json:"label"`
 	Description                 string    `json:"description"`
 	Hostname                    string    `json:"hostname"`
@@ -40,6 +41,17 @@ type Device struct {
 	IdentitySource              string    `json:"identity_source"`
 	IdentityUsername            string    `json:"identity_username"`
 	IdentityFullName            string    `json:"identity_full_name"`
+	RegisteredOwner             string    `json:"registered_owner"`
+	OwnerUsername               string    `json:"owner_username"`
+	OwnerDepartment             string    `json:"owner_department"`
+	OwnerRole                   string    `json:"owner_role"`
+	DefaultVLANID               int       `json:"default_vlan_id"`
+	DefaultVLANName             string    `json:"default_vlan_name"`
+	AssignedPolicy              string    `json:"assigned_policy"`
+	EnrichmentSource            string    `json:"enrichment_source"`
+	EnrichmentStatus            string    `json:"enrichment_status"`
+	EnrichmentError             string    `json:"enrichment_error"`
+	EnrichedAt                  time.Time `json:"enriched_at"`
 	LDAPDeviceCN                string    `json:"ldap_device_cn"`
 	LDAPOwnerDN                 string    `json:"ldap_owner_dn"`
 	LDAPLocationDN              string    `json:"ldap_location_dn"`
@@ -103,6 +115,45 @@ type Observation struct {
 	Source      string    `json:"source"`
 	ObservedAt  time.Time `json:"observed_at"`
 	CreatedAt   time.Time `json:"created_at"`
+}
+
+type EnrichmentUpdate struct {
+	MACAddress            string
+	DeviceType            string
+	RegisteredVendor      string
+	Description           string
+	RegisteredOwner       string
+	OwnerUsername         string
+	OwnerDepartment       string
+	OwnerRole             string
+	DefaultVLANID         int
+	DefaultVLANName       string
+	AssignedPolicy        string
+	TrustLevel            string
+	EnrichmentSource      string
+	EnrichmentStatus      string
+	EnrichmentError       string
+	EnrichedAt            time.Time
+	PolicyAction          string
+	PolicyReason          string
+	LastPolicyDecision    string
+	LastPolicyEvaluatedAt time.Time
+	Status                string
+	ClassificationMethod  string
+	LDAPDeviceCN          string
+	LDAPOwnerDN           string
+	LDAPLocationDN        string
+	LDAPOwnershipType     string
+	LDAPDepartment        string
+	LDAPAssetTag          string
+	LDAPPolicyName        string
+	LDAPVendor            string
+	LDAPModel             string
+	LDAPDeviceStatus      string
+	LDAPVLANID            int
+	LDAPVLANName          string
+	LDAPDefaultVLANID     int
+	LDAPDefaultVLANName   string
 }
 
 type AgentlessObservationInput struct {

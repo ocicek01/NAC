@@ -14,6 +14,7 @@ import (
 	sessiondomain "nac/internal/domain/session"
 	switchportdomain "nac/internal/domain/switchport"
 	identitysource "nac/internal/service/identitysource"
+	policyservice "nac/internal/service/policy"
 )
 
 func TestListBySwitchAndIfIndexFallsBackToObservedPortData(t *testing.T) {
@@ -45,7 +46,7 @@ func TestListBySwitchAndIfIndexFallsBackToObservedPortData(t *testing.T) {
 		},
 	}
 
-	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, switchPorts, portEndpoints, nil, nil, nil, nil, 0, 0, 0, false, false, 0, 0, 0, false, 0)
+	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, switchPorts, portEndpoints, nil, nil, nil, nil, nil, 0, 0, 0, false, false, 0, 0, 0, false, 0)
 
 	devices, err := service.ListBySwitchAndIfIndex(context.Background(), "sw-1", 32)
 	if err != nil {
@@ -107,7 +108,7 @@ func TestListBySwitchAndIfIndexFallsBackToRadiusSessionAndBindingData(t *testing
 		},
 	}
 
-	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, switchPorts, nil, sessions, bindings, nil, nil, 0, 0, 0, false, false, 0, 0, 0, false, 0)
+	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, switchPorts, nil, sessions, bindings, nil, nil, nil, 0, 0, 0, false, false, 0, 0, 0, false, 0)
 
 	devices, err := service.ListBySwitchAndIfIndex(context.Background(), "sw-1", 32)
 	if err != nil {
@@ -150,7 +151,7 @@ func TestListBySwitchAndIfIndexFallsBackToDHCPEventData(t *testing.T) {
 		},
 	}
 
-	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, switchPorts, nil, nil, nil, dhcpEvents, nil, 0, 0, 0, false, false, 0, 0, 0, false, 0)
+	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, switchPorts, nil, nil, nil, dhcpEvents, nil, nil, 0, 0, 0, false, false, 0, 0, 0, false, 0)
 
 	devices, err := service.ListBySwitchAndIfIndex(context.Background(), "sw-1", 32)
 	if err != nil {
@@ -172,7 +173,7 @@ func TestListUsesPaginationWithoutLDAPEnrichment(t *testing.T) {
 	}
 	ldap := &stubLDAPDeviceResolver{}
 
-	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, nil, nil, nil, nil, nil, ldap, 0, 0, 0, false, false, 0, 0, 0, false, 0)
+	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, nil, nil, nil, nil, nil, ldap, nil, 0, 0, 0, false, false, 0, 0, 0, false, 0)
 
 	devices, err := service.List(context.Background(), 25, 10)
 	if err != nil {
@@ -189,6 +190,77 @@ func TestListUsesPaginationWithoutLDAPEnrichment(t *testing.T) {
 	}
 	if ldap.lookupCalls != 0 {
 		t.Fatalf("expected no LDAP lookups for list endpoint, got %d", ldap.lookupCalls)
+	}
+}
+
+func TestEnrichDeviceMetadataAppliesOwnerMetadataAndPolicyGuard(t *testing.T) {
+	repo := &stubDeviceRepository{
+		byMAC: map[string][]devicedomain.Device{
+			"AA:BB:CC:DD:EE:FF": {{
+				ID:                   "dev-1",
+				MACAddress:           "AA:BB:CC:DD:EE:FF",
+				Hostname:             "edge-ap",
+				CurrentSwitchID:      "sw-1",
+				CurrentSwitchName:    "sw-1",
+				CurrentInterfaceName: "10",
+				CurrentSourceType:    "snmp",
+				PolicyAction:         "active",
+				PolicyReason:         "old",
+				Status:               "active",
+				TrustLevel:           "low",
+			}},
+		},
+	}
+	ldap := &stubLDAPDeviceResolver{
+		records: map[string]*identitysource.LDAPDeviceRecord{
+			"AA:BB:CC:DD:EE:FF": {
+				OwnerName:       "Network Team",
+				OwnerUsername:   "netops",
+				OwnerRole:       "staff",
+				Department:      "IT",
+				DeviceType:      "access-point",
+				Vendor:          "Cisco",
+				DefaultVLANID:   120,
+				DefaultVLANName: "corp",
+				PolicyName:      "managed-ap",
+			},
+		},
+	}
+	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, nil, nil, nil, nil, nil, ldap, nil, 0, 0, 0, false, false, 0, 0, 0, false, 0)
+
+	if err := service.EnrichDeviceMetadata(context.Background(), "AA:BB:CC:DD:EE:FF"); err != nil {
+		t.Fatalf("EnrichDeviceMetadata returned error: %v", err)
+	}
+	if repo.lastEnrichment.OwnerUsername != "netops" {
+		t.Fatalf("expected owner username netops, got %q", repo.lastEnrichment.OwnerUsername)
+	}
+	if repo.lastEnrichment.EnrichmentStatus != enrichmentStatusFound {
+		t.Fatalf("expected enrichment status found, got %q", repo.lastEnrichment.EnrichmentStatus)
+	}
+	if repo.lastEnrichment.TrustLevel != "high" {
+		t.Fatalf("expected trust level high, got %q", repo.lastEnrichment.TrustLevel)
+	}
+	if repo.lastEnrichment.PolicyAction != "pending" {
+		t.Fatalf("expected policy action pending with default policy flow, got %q", repo.lastEnrichment.PolicyAction)
+	}
+}
+
+func TestEnrichDeviceMetadataMarksNotFoundWithoutError(t *testing.T) {
+	repo := &stubDeviceRepository{
+		byMAC: map[string][]devicedomain.Device{
+			"AA:BB:CC:DD:EE:11": {{ID: "dev-2", MACAddress: "AA:BB:CC:DD:EE:11", PolicyAction: "unknown", PolicyReason: "unknown", Status: "unknown"}},
+		},
+	}
+	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, stubPolicyEvaluator{result: policyservice.EvaluationResult{Status: "active", Action: "active", Reason: "matched"}}, nil, nil, nil, nil, nil, nil, &stubLDAPDeviceResolver{}, nil, 0, 0, 0, false, false, 0, 0, 0, false, 0)
+
+	if err := service.EnrichDeviceMetadata(context.Background(), "AA:BB:CC:DD:EE:11"); err != nil {
+		t.Fatalf("EnrichDeviceMetadata returned error: %v", err)
+	}
+	if repo.lastEnrichment.EnrichmentStatus != enrichmentStatusNotFound {
+		t.Fatalf("expected not_found status, got %q", repo.lastEnrichment.EnrichmentStatus)
+	}
+	if repo.lastEnrichment.PolicyAction != "unknown" {
+		t.Fatalf("expected unknown policy action for unenriched device, got %q", repo.lastEnrichment.PolicyAction)
 	}
 }
 
@@ -212,7 +284,7 @@ func TestListBySwitchKeepsRealInventoryAndAppendsObservedFallbacks(t *testing.T)
 	}
 	portEndpoints := &stubPortEndpointResolver{}
 
-	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, switchPorts, portEndpoints, nil, nil, nil, nil, 0, 0, 0, false, false, 0, 0, 0, false, 0)
+	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, switchPorts, portEndpoints, nil, nil, nil, nil, nil, 0, 0, 0, false, false, 0, 0, 0, false, 0)
 
 	devices, err := service.ListBySwitch(context.Background(), "sw-1")
 	if err != nil {
@@ -234,12 +306,14 @@ func TestListBySwitchKeepsRealInventoryAndAppendsObservedFallbacks(t *testing.T)
 }
 
 type stubDeviceRepository struct {
-	list       []devicedomain.Device
-	bySwitch   []devicedomain.Device
-	byPort     []devicedomain.Device
-	listLimit  int
-	listOffset int
-	listCalls  int
+	list           []devicedomain.Device
+	byMAC          map[string][]devicedomain.Device
+	bySwitch       []devicedomain.Device
+	byPort         []devicedomain.Device
+	listLimit      int
+	listOffset     int
+	listCalls      int
+	lastEnrichment devicedomain.EnrichmentUpdate
 }
 
 func (s *stubDeviceRepository) Upsert(ctx context.Context, device devicedomain.Device) (devicedomain.Device, error) {
@@ -252,7 +326,11 @@ func (s *stubDeviceRepository) List(ctx context.Context, limit, offset int) ([]d
 	return append([]devicedomain.Device{}, s.list...), nil
 }
 func (s *stubDeviceRepository) ListByMAC(ctx context.Context, macAddress string) ([]devicedomain.Device, error) {
-	return nil, nil
+	items, ok := s.byMAC[macAddress]
+	if !ok {
+		return nil, nil
+	}
+	return append([]devicedomain.Device{}, items...), nil
 }
 func (s *stubDeviceRepository) ListBySwitch(ctx context.Context, switchID string) ([]devicedomain.Device, error) {
 	return append([]devicedomain.Device{}, s.bySwitch...), nil
@@ -268,6 +346,10 @@ func (s *stubDeviceRepository) AddIdentitySnapshot(ctx context.Context, snapshot
 }
 func (s *stubDeviceRepository) AddObservation(ctx context.Context, observation devicedomain.Observation) (devicedomain.Observation, error) {
 	return observation, nil
+}
+func (s *stubDeviceRepository) UpdateEnrichment(ctx context.Context, update devicedomain.EnrichmentUpdate) (devicedomain.Device, error) {
+	s.lastEnrichment = update
+	return devicedomain.Device{ID: "updated", MACAddress: update.MACAddress, CurrentSwitchID: "sw-1"}, nil
 }
 func (s *stubDeviceRepository) UpdateSophosIdentity(ctx context.Context, macAddress, username, ipAddress string, seenAt time.Time) error {
 	return nil
@@ -345,9 +427,29 @@ func (s *stubDHCPEventResolver) FindLatestByMAC(ctx context.Context, macAddress 
 
 type stubLDAPDeviceResolver struct {
 	lookupCalls int
+	records     map[string]*identitysource.LDAPDeviceRecord
+	err         error
 }
 
 func (s *stubLDAPDeviceResolver) LookupByMAC(ctx context.Context, macAddress string) (*identitysource.LDAPDeviceRecord, error) {
 	s.lookupCalls++
-	return nil, nil
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.records == nil {
+		return nil, nil
+	}
+	return s.records[macAddress], nil
+}
+
+type stubPolicyEvaluator struct {
+	result policyservice.EvaluationResult
+}
+
+func (s stubPolicyEvaluator) EnsureDefaults(ctx context.Context) error {
+	return nil
+}
+
+func (s stubPolicyEvaluator) Evaluate(ctx context.Context, input policyservice.EvaluationInput) (policyservice.EvaluationResult, error) {
+	return s.result, nil
 }

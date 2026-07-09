@@ -149,6 +149,7 @@ func New(ctx context.Context) (*App, error) {
 		macIPBindingRepository,
 		dhcpEventRepository,
 		ldapDeviceResolver,
+		auditService,
 		parseVLANID(cfg.Radius.RegistrationVLAN),
 		parseVLANID(cfg.Radius.GuestVLAN),
 		parseVLANID(cfg.Radius.QuarantineVLAN),
