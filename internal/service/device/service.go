@@ -36,11 +36,15 @@ const (
 	autoEnforcementSuppressionWindow = 2 * time.Minute
 	enrichmentSourceOpenLDAP         = "openldap_device_registry"
 	enrichmentStatusPending          = "pending"
-	enrichmentStatusFound            = "found"
+	enrichmentStatusFound            = "enriched"
 	enrichmentStatusNotFound         = "not_found"
-	enrichmentStatusLookupFailed     = "lookup_failed"
+	enrichmentStatusLookupFailed     = "failed"
+	enrichmentStatusLegacyFailed     = "lookup_failed"
 	enrichmentEnqueueRetryDelay      = 250 * time.Millisecond
 	enrichmentEnqueueRetryLimit      = 20
+	enrichmentBackfillBatchSize      = 50
+	enrichmentBackfillItemDelay      = 100 * time.Millisecond
+	enrichmentBackfillBatchDelay     = 1 * time.Second
 )
 
 type PolicyEvaluator interface {
@@ -110,6 +114,8 @@ type Service struct {
 	enrichmentQueue      chan string
 	enrichmentMu         sync.Mutex
 	enrichmentQueued     map[string]struct{}
+	backfillMu           sync.Mutex
+	backfillRunning      bool
 }
 
 const (
@@ -726,7 +732,7 @@ func (s *Service) enqueueMissingEnrichment(devices []domain.Device) {
 func (s *Service) runEnrichmentWorker() {
 	for macAddress := range s.enrichmentQueue {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_ = s.EnrichDeviceMetadata(ctx, macAddress)
+		_, _ = s.enrichDeviceMetadata(ctx, macAddress)
 		cancel()
 		s.enrichmentMu.Lock()
 		delete(s.enrichmentQueued, macAddress)
@@ -734,22 +740,118 @@ func (s *Service) runEnrichmentWorker() {
 	}
 }
 
-func (s *Service) EnrichDeviceMetadata(ctx context.Context, macAddress string) error {
+func (s *Service) RunEnrichmentBackfill(ctx context.Context) {
 	if s == nil || s.repository == nil || s.ldapDevices == nil {
-		return nil
+		return
+	}
+
+	s.backfillMu.Lock()
+	if s.backfillRunning {
+		s.backfillMu.Unlock()
+		return
+	}
+	s.backfillRunning = true
+	s.backfillMu.Unlock()
+	defer func() {
+		s.backfillMu.Lock()
+		s.backfillRunning = false
+		s.backfillMu.Unlock()
+	}()
+
+	startedAt := time.Now().UTC()
+	if s.audit != nil {
+		_ = s.audit.Record(ctx, "backfill_started", "info", "device_enrichment_backfill", "device-enrichment-backfill", "", "", map[string]any{
+			"batch_size": enrichmentBackfillBatchSize,
+		})
+	}
+
+	processed := 0
+	results := map[string]int{}
+	for {
+		if err := ctx.Err(); err != nil {
+			break
+		}
+		candidates, err := s.repository.ListEnrichmentBackfillCandidates(ctx, enrichmentBackfillBatchSize)
+		if err != nil {
+			s.logError("device enrichment backfill list failed", "error", err)
+			results["failed"]++
+			break
+		}
+		if len(candidates) == 0 {
+			break
+		}
+		for _, candidate := range candidates {
+			if err := ctx.Err(); err != nil {
+				break
+			}
+			itemCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			result, itemErr := s.enrichDeviceMetadata(itemCtx, candidate.MACAddress)
+			cancel()
+			if itemErr != nil && result == "" {
+				result = "failed"
+			}
+			if result == "" {
+				result = "skipped"
+			}
+			results[result]++
+			processed++
+			if s.audit != nil {
+				statusValue := "info"
+				switch result {
+				case "enriched":
+					statusValue = "success"
+				case "not_found", "skipped":
+					statusValue = "warning"
+				case "failed":
+					statusValue = "error"
+				}
+				payload := map[string]any{"result": result}
+				if itemErr != nil {
+					payload["error"] = itemErr.Error()
+				}
+				_ = s.audit.Record(ctx, "backfill_item_processed", statusValue, "device", candidate.ID, candidate.CurrentSwitchID, candidate.MACAddress, payload)
+			}
+			time.Sleep(enrichmentBackfillItemDelay)
+		}
+		time.Sleep(enrichmentBackfillBatchDelay)
+	}
+
+	if s.audit != nil {
+		payload := map[string]any{
+			"batch_size":  enrichmentBackfillBatchSize,
+			"processed":   processed,
+			"duration_ms": time.Since(startedAt).Milliseconds(),
+			"results":     results,
+		}
+		_ = s.audit.Record(ctx, "backfill_completed", "success", "device_enrichment_backfill", "device-enrichment-backfill", "", "", payload)
+	}
+}
+
+func (s *Service) EnrichDeviceMetadata(ctx context.Context, macAddress string) error {
+	_, err := s.enrichDeviceMetadata(ctx, macAddress)
+	return err
+}
+
+func (s *Service) enrichDeviceMetadata(ctx context.Context, macAddress string) (string, error) {
+	if s == nil || s.repository == nil || s.ldapDevices == nil {
+		return "skipped", nil
 	}
 	macAddress = normalize.MACAddress(macAddress)
 	if macAddress == "" {
-		return nil
+		return "skipped", nil
 	}
 	devices, err := s.repository.ListByMAC(ctx, macAddress)
 	if err != nil {
-		return err
+		return "failed", err
 	}
 	if len(devices) == 0 {
-		return nil
+		return "skipped", nil
 	}
 	current := devices[0]
+	if !shouldEnqueueEnrichment(current.EnrichmentStatus) {
+		return "skipped", nil
+	}
+	currentID := current.ID
 	now := time.Now().UTC()
 	update := domain.EnrichmentUpdate{
 		MACAddress:            macAddress,
@@ -768,23 +870,25 @@ func (s *Service) EnrichDeviceMetadata(ctx context.Context, macAddress string) e
 		update.PolicyReason = current.PolicyReason
 		update.LastPolicyDecision = current.LastPolicyDecision
 		if _, err := s.repository.UpdateEnrichment(ctx, update); err != nil {
-			return err
+			return "failed", err
 		}
 		if s.audit != nil {
-			_ = s.audit.Record(ctx, "device_enrichment_failed", "error", "device", current.ID, current.CurrentSwitchID, macAddress, map[string]any{
+			_ = s.audit.Record(ctx, "device_enrichment_failed", "error", "device", currentID, current.CurrentSwitchID, macAddress, map[string]any{
 				"enrichment_source": enrichmentSourceOpenLDAP,
 				"enrichment_status": enrichmentStatusLookupFailed,
 				"error":             update.EnrichmentError,
 			})
 		}
-		return lookupErr
+		return "failed", lookupErr
 	}
 
 	update.EnrichmentStatus = enrichmentStatusNotFound
 	update.EnrichmentError = ""
+	result := "not_found"
 	if record != nil {
 		update = s.applyLDAPDeviceRecord(update, *record)
 		update.EnrichmentStatus = enrichmentStatusFound
+		result = "enriched"
 	}
 
 	status, policyAction, policyReason := s.evaluatePolicy(ctx, policyservice.EvaluationInput{
@@ -815,7 +919,7 @@ func (s *Service) EnrichDeviceMetadata(ctx context.Context, macAddress string) e
 
 	updated, err := s.repository.UpdateEnrichment(ctx, update)
 	if err != nil {
-		return err
+		return "failed", err
 	}
 	if s.audit != nil {
 		action := "device_enrichment_missing"
@@ -836,7 +940,7 @@ func (s *Service) EnrichDeviceMetadata(ctx context.Context, macAddress string) e
 			"policy_action":     update.PolicyAction,
 		})
 	}
-	return nil
+	return result, nil
 }
 
 func (s *Service) applyLDAPDeviceRecord(update domain.EnrichmentUpdate, record identitysource.LDAPDeviceRecord) domain.EnrichmentUpdate {
@@ -1594,7 +1698,7 @@ func (s *Service) logError(msg string, args ...any) {
 
 func shouldEnqueueEnrichment(status string) bool {
 	status = strings.TrimSpace(status)
-	return status == "" || strings.EqualFold(status, enrichmentStatusLookupFailed)
+	return status == "" || strings.EqualFold(status, enrichmentStatusLookupFailed) || strings.EqualFold(status, enrichmentStatusLegacyFailed)
 }
 
 func deriveTrustLevel(ipAddress, hostname, deviceType string) string {

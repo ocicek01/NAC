@@ -258,10 +258,34 @@ func TestShouldEnqueueEnrichment(t *testing.T) {
 		t.Fatalf("expected blank enrichment status to be queued")
 	}
 	if !shouldEnqueueEnrichment(enrichmentStatusLookupFailed) {
-		t.Fatalf("expected lookup_failed enrichment status to be queued")
+		t.Fatalf("expected failed enrichment status to be queued")
+	}
+	if !shouldEnqueueEnrichment(enrichmentStatusLegacyFailed) {
+		t.Fatalf("expected legacy lookup_failed enrichment status to be queued")
 	}
 	if shouldEnqueueEnrichment(enrichmentStatusNotFound) {
 		t.Fatalf("expected not_found enrichment status to be skipped")
+	}
+}
+
+func TestRunEnrichmentBackfillProcessesCandidates(t *testing.T) {
+	repo := &stubDeviceRepository{
+		backfill: []devicedomain.Device{{ID: "dev-1", MACAddress: "AA:BB:CC:DD:EE:11"}},
+		byMAC: map[string][]devicedomain.Device{
+			"AA:BB:CC:DD:EE:11": {{ID: "dev-1", MACAddress: "AA:BB:CC:DD:EE:11", PolicyAction: "unknown", PolicyReason: "unknown", Status: "unknown"}},
+		},
+	}
+	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, stubPolicyEvaluator{result: policyservice.EvaluationResult{Status: "unknown", Action: "unknown", Reason: "matched"}}, nil, nil, nil, nil, nil, nil, &stubLDAPDeviceResolver{}, nil, 0, 0, 0, false, false, 0, 0, 0, false, 0)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	service.RunEnrichmentBackfill(ctx)
+
+	if repo.backfillCalls == 0 {
+		t.Fatalf("expected backfill candidates to be queried")
+	}
+	if repo.lastEnrichment.MACAddress != "AA:BB:CC:DD:EE:11" {
+		t.Fatalf("expected backfill item to be enriched, got %q", repo.lastEnrichment.MACAddress)
 	}
 }
 
@@ -379,12 +403,14 @@ func TestListBySwitchKeepsRealInventoryAndAppendsObservedFallbacks(t *testing.T)
 
 type stubDeviceRepository struct {
 	list           []devicedomain.Device
+	backfill       []devicedomain.Device
 	byMAC          map[string][]devicedomain.Device
 	bySwitch       []devicedomain.Device
 	byPort         []devicedomain.Device
 	listLimit      int
 	listOffset     int
 	listCalls      int
+	backfillCalls  int
 	lastEnrichment devicedomain.EnrichmentUpdate
 }
 
@@ -396,6 +422,12 @@ func (s *stubDeviceRepository) List(ctx context.Context, limit, offset int) ([]d
 	s.listLimit = limit
 	s.listOffset = offset
 	return append([]devicedomain.Device{}, s.list...), nil
+}
+func (s *stubDeviceRepository) ListEnrichmentBackfillCandidates(ctx context.Context, limit int) ([]devicedomain.Device, error) {
+	s.backfillCalls++
+	items := append([]devicedomain.Device{}, s.backfill...)
+	s.backfill = nil
+	return items, nil
 }
 func (s *stubDeviceRepository) ListByMAC(ctx context.Context, macAddress string) ([]devicedomain.Device, error) {
 	items, ok := s.byMAC[macAddress]

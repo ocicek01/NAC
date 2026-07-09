@@ -907,6 +907,45 @@ func (r *PostgresRepository) List(ctx context.Context, limit, offset int) ([]dom
 	return devices, nil
 }
 
+func (r *PostgresRepository) ListEnrichmentBackfillCandidates(ctx context.Context, limit int) ([]domain.Device, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+
+	query := `
+		SELECT ` + deviceSelectColumns + `
+		FROM devices
+		WHERE COALESCE(NULLIF(BTRIM(enrichment_status), ''), '') = ''
+		   OR LOWER(BTRIM(enrichment_status)) IN ('failed', 'lookup_failed')
+		ORDER BY updated_at ASC, created_at ASC
+		LIMIT $1
+	`
+
+	rows, err := r.pool.Query(ctx, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	devices := make([]domain.Device, 0, limit)
+	for rows.Next() {
+		item, err := scanDevice(rows)
+		if err != nil {
+			return nil, err
+		}
+		devices = append(devices, item)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return devices, nil
+}
+
 func (r *PostgresRepository) ListByMAC(ctx context.Context, macAddress string) ([]domain.Device, error) {
 	query := `
 		SELECT ` + deviceSelectColumns + `

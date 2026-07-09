@@ -75,13 +75,14 @@ import (
 )
 
 type App struct {
-	config    config.Config
-	logger    *slog.Logger
-	postgres  *pgxpool.Pool
-	server    *httpserver.Server
-	collector *dhcpcollector.Collector
-	traps     *snmptrapcollector.Collector
-	trapWork  *trapwindowservice.Service
+	config     config.Config
+	logger     *slog.Logger
+	postgres   *pgxpool.Pool
+	server     *httpserver.Server
+	collector  *dhcpcollector.Collector
+	traps      *snmptrapcollector.Collector
+	trapWork   *trapwindowservice.Service
+	deviceWork *deviceservice.Service
 }
 
 func New(ctx context.Context) (*App, error) {
@@ -183,13 +184,14 @@ func New(ctx context.Context) (*App, error) {
 	trapCollector := snmptrapcollector.New(cfg.SNMPTrap, logger, snmpTrapService)
 
 	return &App{
-		config:    cfg,
-		logger:    logger,
-		postgres:  postgresPool,
-		server:    server,
-		collector: collector,
-		traps:     trapCollector,
-		trapWork:  trapWindowService,
+		config:     cfg,
+		logger:     logger,
+		postgres:   postgresPool,
+		server:     server,
+		collector:  collector,
+		traps:      trapCollector,
+		trapWork:   trapWindowService,
+		deviceWork: deviceService,
 	}, nil
 }
 
@@ -240,6 +242,10 @@ func (a *App) Run(ctx context.Context) error {
 				}
 			}
 		}()
+	}
+
+	if a.deviceWork != nil {
+		go a.deviceWork.RunEnrichmentBackfill(ctx)
 	}
 
 	select {
