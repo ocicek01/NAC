@@ -998,7 +998,7 @@ func (r *PostgresRepository) AddObservation(ctx context.Context, observation dom
 		INSERT INTO device_observations (
 			id, device_id, mac_address, ip_address, switch_id, port_ifindex, vlan_id, source, observed_at, created_at
 		)
-		VALUES ($1, NULLIF($2, '''')::uuid, $3, NULLIF($4, '''')::inet, NULLIF($5, '''')::uuid, $6, $7, $8, $9, $10)
+		VALUES ($1, NULLIF($2, '')::uuid, $3, NULLIF($4, '')::inet, NULLIF($5, '')::uuid, $6, $7, $8, $9, $10)
 	`, observation.ID, observation.DeviceID, observation.MACAddress, observation.IPAddress, observation.SwitchID, observation.PortIfIndex, observation.VLANID, observation.Source, observation.ObservedAt, observation.CreatedAt)
 	if err != nil {
 		return domain.Observation{}, err
