@@ -175,7 +175,12 @@ func (s *Service) List(ctx context.Context, limit, offset int) ([]domain.Device,
 		offset = 0
 	}
 
-	return s.repository.List(ctx, limit, offset)
+	devices, err := s.repository.List(ctx, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	s.enqueueMissingEnrichment(devices)
+	return devices, nil
 }
 
 func (s *Service) ListByMAC(ctx context.Context, macAddress string) ([]domain.Device, error) {
@@ -690,6 +695,18 @@ func (s *Service) enqueueEnrichment(macAddress string) {
 	}
 }
 
+func (s *Service) enqueueMissingEnrichment(devices []domain.Device) {
+	if s == nil || s.ldapDevices == nil || len(devices) == 0 {
+		return
+	}
+	for _, device := range devices {
+		if strings.TrimSpace(device.EnrichmentStatus) != "" {
+			continue
+		}
+		s.enqueueEnrichment(device.MACAddress)
+	}
+}
+
 func (s *Service) runEnrichmentWorker() {
 	for macAddress := range s.enrichmentQueue {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1140,6 +1157,7 @@ func (s *Service) UpsertFromObservation(ctx context.Context, event dhcpevent.Eve
 	if err != nil {
 		return err
 	}
+	s.enqueueEnrichment(out.MACAddress)
 
 	if s.enforcement != nil {
 		allowed, skipReason := s.acquireEnforcementState(ctx, out)
@@ -1225,6 +1243,7 @@ func (s *Service) UpsertFromRadius(ctx context.Context, input RadiusInventoryInp
 	if err != nil {
 		return err
 	}
+	s.enqueueEnrichment(out.MACAddress)
 
 	if s.enforcement != nil {
 		allowed, skipReason := s.acquireEnforcementState(ctx, out)

@@ -193,6 +193,39 @@ func TestListUsesPaginationWithoutLDAPEnrichment(t *testing.T) {
 	}
 }
 
+func TestListQueuesMissingEnrichmentWithoutBlocking(t *testing.T) {
+	repo := &stubDeviceRepository{
+		list: []devicedomain.Device{{MACAddress: "AA:BB:CC:DD:EE:FF"}},
+		byMAC: map[string][]devicedomain.Device{
+			"AA:BB:CC:DD:EE:FF": {{ID: "dev-1", MACAddress: "AA:BB:CC:DD:EE:FF", PolicyAction: "unknown", PolicyReason: "unknown", Status: "unknown"}},
+		},
+	}
+	ldap := &stubLDAPDeviceResolver{}
+	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, stubPolicyEvaluator{result: policyservice.EvaluationResult{Status: "unknown", Action: "unknown", Reason: "matched"}}, nil, nil, nil, nil, nil, nil, ldap, nil, 0, 0, 0, false, false, 0, 0, 0, false, 0)
+
+	devices, err := service.List(context.Background(), 10, 0)
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if len(devices) != 1 {
+		t.Fatalf("expected 1 device, got %d", len(devices))
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if repo.lastEnrichment.MACAddress == "AA:BB:CC:DD:EE:FF" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if repo.lastEnrichment.MACAddress != "AA:BB:CC:DD:EE:FF" {
+		t.Fatalf("expected background enrichment to be queued for listed device")
+	}
+	if ldap.lookupCalls == 0 {
+		t.Fatalf("expected background worker to perform LDAP lookup")
+	}
+}
+
 func TestEnrichDeviceMetadataAppliesOwnerMetadataAndPolicyGuard(t *testing.T) {
 	repo := &stubDeviceRepository{
 		byMAC: map[string][]devicedomain.Device{
