@@ -75,14 +75,15 @@ import (
 )
 
 type App struct {
-	config     config.Config
-	logger     *slog.Logger
-	postgres   *pgxpool.Pool
-	server     *httpserver.Server
-	collector  *dhcpcollector.Collector
-	traps      *snmptrapcollector.Collector
-	trapWork   *trapwindowservice.Service
-	deviceWork *deviceservice.Service
+	config          config.Config
+	logger          *slog.Logger
+	postgres        *pgxpool.Pool
+	server          *httpserver.Server
+	collector       *dhcpcollector.Collector
+	traps           *snmptrapcollector.Collector
+	trapWork        *trapwindowservice.Service
+	deviceWork      *deviceservice.Service
+	enforcementWork *enforcementservice.Service
 }
 
 func New(ctx context.Context) (*App, error) {
@@ -130,6 +131,7 @@ func New(ctx context.Context) (*App, error) {
 	radiusSessionService := sessionservice.NewService(radiusSessionRepository)
 	var enforcementRepository enforcementdomain.Repository = enforcementrepository.NewPostgresRepository(postgresPool)
 	enforcementEngineService := enforcementservice.NewService(enforcementRepository, switchRepository, radiusSessionRepository, cfg.Radius)
+	enforcementEngineService.ConfigurePhase31(cfg.Enforcement, policyRepository, deviceRepository, switchPortRepository, auditService)
 	guestIdentityService := guestidentityservice.NewService(guestIdentityRepository)
 	timeout := time.Duration(cfg.Identity.HTTPTimeoutSeconds) * time.Second
 	ldapResolver := identitysourceservice.Resolver(identitysourceservice.NewLDAPResolver(cfg.Identity))
@@ -184,14 +186,15 @@ func New(ctx context.Context) (*App, error) {
 	trapCollector := snmptrapcollector.New(cfg.SNMPTrap, logger, snmpTrapService)
 
 	return &App{
-		config:     cfg,
-		logger:     logger,
-		postgres:   postgresPool,
-		server:     server,
-		collector:  collector,
-		traps:      trapCollector,
-		trapWork:   trapWindowService,
-		deviceWork: deviceService,
+		config:          cfg,
+		logger:          logger,
+		postgres:        postgresPool,
+		server:          server,
+		collector:       collector,
+		traps:           trapCollector,
+		trapWork:        trapWindowService,
+		deviceWork:      deviceService,
+		enforcementWork: enforcementEngineService,
 	}, nil
 }
 
@@ -246,6 +249,22 @@ func (a *App) Run(ctx context.Context) error {
 
 	if a.deviceWork != nil {
 		go a.deviceWork.RunEnrichmentBackfill(ctx)
+	}
+	if a.enforcementWork != nil {
+		go func() {
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if err := a.enforcementWork.ProcessDueRequests(ctx, a.config.Enforcement.WorkerBatchSize); err != nil {
+						a.logger.Warn("enforcement worker failed", "error", err)
+					}
+				}
+			}
+		}()
 	}
 
 	select {

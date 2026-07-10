@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	device "nac/internal/domain/device"
+	enforcementdomain "nac/internal/domain/enforcement"
 	policydomain "nac/internal/domain/policy"
 	policyservice "nac/internal/service/policy"
 )
@@ -26,6 +27,7 @@ type deviceService interface {
 	RecordSophosIdentity(ctx context.Context, macAddress, username, ipAddress string, seenAt time.Time) error
 	EvaluatePolicyByID(ctx context.Context, deviceID string) (policyservice.EvaluationResult, error)
 	ListPolicyDecisionsByDevice(ctx context.Context, deviceID string, limit, offset int) ([]policydomain.Decision, error)
+	ListDeviceRequests(ctx context.Context, deviceID string, limit, offset int) ([]enforcementdomain.Request, error)
 }
 
 type deviceStatusUpdateRequest struct {

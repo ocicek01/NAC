@@ -1871,3 +1871,17 @@ func derivePortProfile(port switchportdomain.Port) string {
 	}
 	return ""
 }
+
+func (s *Service) ListDeviceRequests(ctx context.Context, deviceID string, limit, offset int) ([]enforcementdomain.Request, error) {
+	if s == nil || s.enforcement == nil {
+		return []enforcementdomain.Request{}, nil
+	}
+	type historyProvider interface {
+		ListDeviceRequests(ctx context.Context, deviceID string, limit, offset int) ([]enforcementdomain.Request, error)
+	}
+	provider, ok := s.enforcement.(historyProvider)
+	if !ok {
+		return []enforcementdomain.Request{}, nil
+	}
+	return provider.ListDeviceRequests(ctx, strings.TrimSpace(deviceID), limit, offset)
+}

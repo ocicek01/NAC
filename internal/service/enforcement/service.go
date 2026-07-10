@@ -55,12 +55,18 @@ type SessionResolver interface {
 }
 
 type Service struct {
-	repository Repository
-	switches   SwitchCapabilityResolver
-	sessions   SessionResolver
-	ssh        SSHExecutor
-	snmp       SNMPEnforcer
-	coa        CoAExecutor
+	repository     Repository
+	switches       SwitchCapabilityResolver
+	sessions       SessionResolver
+	ssh            SSHExecutor
+	snmp           SNMPEnforcer
+	coa            CoAExecutor
+	enforcementCfg config.EnforcementConfig
+	policies       policyDecisionResolver
+	devices        deviceStateResolver
+	ports          portResolver
+	audit          auditRecorder
+	adapters       map[string]Adapter
 }
 
 func NewService(repository Repository, switches SwitchCapabilityResolver, sessions SessionResolver, radiusCfg config.RadiusConfig) *Service {
@@ -71,6 +77,7 @@ func NewService(repository Repository, switches SwitchCapabilityResolver, sessio
 		ssh:        NewNativeSSHExecutor(),
 		snmp:       NewSNMPEnforcer(),
 		coa:        NewCoAExecutor(radiusCfg),
+		adapters:   map[string]Adapter{},
 	}
 }
 
