@@ -44,20 +44,26 @@ type TrustScoreResult struct {
 }
 
 type Decision struct {
-	ID                   string        `json:"id"`
-	DeviceID             string        `json:"device_id"`
-	PortEventID          string        `json:"port_event_id"`
-	PolicyID             string        `json:"policy_id"`
-	PolicyName           string        `json:"policy_name"`
-	DecisionType         string        `json:"decision_type"`
-	TargetVLAN           int           `json:"target_vlan"`
-	EnforcementAction    string        `json:"enforcement_action"`
-	TrustScore           int           `json:"trust_score"`
-	TrustSignals         []TrustSignal `json:"trust_signals"`
-	ReasonCodes          []string      `json:"reason_codes"`
-	Explanation          string        `json:"explanation"`
-	DryRun               bool          `json:"dry_run"`
-	EnforcementStatus    string        `json:"enforcement_status"`
-	EvaluationDurationMS int64         `json:"evaluation_duration_ms"`
-	CreatedAt            time.Time     `json:"created_at"`
+	ID                     string        `json:"id"`
+	DeviceID               string        `json:"device_id"`
+	PortEventID            string        `json:"port_event_id"`
+	PolicyID               string        `json:"policy_id"`
+	PolicyName             string        `json:"policy_name"`
+	DecisionType           string        `json:"decision_type"`
+	TargetVLAN             int           `json:"target_vlan"`
+	EnforcementAction      string        `json:"enforcement_action"`
+	TrustScore             int           `json:"trust_score"`
+	TrustSignals           []TrustSignal `json:"trust_signals"`
+	ReasonCodes            []string      `json:"reason_codes"`
+	Explanation            string        `json:"explanation"`
+	DryRun                 bool          `json:"dry_run"`
+	EnforcementStatus      string        `json:"enforcement_status"`
+	EnforcementRequested   bool          `json:"enforcement_requested"`
+	EnforcementRequestID   string        `json:"enforcement_request_id"`
+	EnforcementStartedAt   time.Time     `json:"enforcement_started_at"`
+	EnforcementCompletedAt time.Time     `json:"enforcement_completed_at"`
+	EnforcementError       string        `json:"enforcement_error"`
+	EnforcedAt             time.Time     `json:"enforced_at"`
+	EvaluationDurationMS   int64         `json:"evaluation_duration_ms"`
+	CreatedAt              time.Time     `json:"created_at"`
 }

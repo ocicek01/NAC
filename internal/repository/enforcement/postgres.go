@@ -2,6 +2,7 @@ package enforcement
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -615,4 +616,362 @@ func (r *PostgresRepository) MarkFailed(ctx context.Context, id, lastError strin
 	`
 	_, err := r.pool.Exec(ctx, query, strings.TrimSpace(id), strings.TrimSpace(lastError))
 	return err
+}
+
+func (r *PostgresRepository) InsertRequest(ctx context.Context, request domain.Request) (domain.Request, error) {
+	metadata, err := json.Marshal(normalizeJSONMap(request.Metadata))
+	if err != nil {
+		return domain.Request{}, err
+	}
+	_, err = r.pool.Exec(ctx, `
+		INSERT INTO enforcement_requests (
+			id, device_id, policy_decision_id, switch_id, port_id, requested_action, target_vlan, previous_vlan,
+			requested_by, request_source, mode, status, attempt_count, adapter, command_summary, error_code,
+			error_message, requested_at, started_at, completed_at, verified_at, rollback_of_request_id,
+			verification_status, current_switch_id, current_if_index, current_interface_name, target_device_mac,
+			metadata, created_at, updated_at
+		)
+		VALUES (
+			$1, NULLIF($2, '')::uuid, NULLIF($3, '')::uuid, NULLIF($4, '')::uuid, NULLIF($5, '')::uuid, $6, $7, $8,
+			$9, $10, $11, $12, $13, $14, $15, $16,
+			$17, $18, $19, $20, $21, NULLIF($22, '')::uuid,
+			$23, NULLIF($24, '')::uuid, $25, $26, $27,
+			$28::jsonb, $29, $30
+		)
+	`, request.ID, request.DeviceID, request.PolicyDecisionID, request.SwitchID, request.PortID, request.RequestedAction, request.TargetVLAN, request.PreviousVLAN, request.RequestedBy, request.RequestSource, request.Mode, request.Status, request.AttemptCount, request.Adapter, request.CommandSummary, request.ErrorCode, request.ErrorMessage, request.RequestedAt, nullableTime(request.StartedAt), nullableTime(request.CompletedAt), nullableTime(request.VerifiedAt), request.RollbackOfRequestID, request.VerificationStatus, request.CurrentSwitchID, request.CurrentIfIndex, request.CurrentInterfaceName, request.TargetDeviceMAC, metadata, request.CreatedAt, request.UpdatedAt)
+	if err != nil {
+		return domain.Request{}, err
+	}
+	if request.Metadata == nil {
+		request.Metadata = map[string]any{}
+	}
+	return request, nil
+}
+
+func (r *PostgresRepository) InsertResult(ctx context.Context, result domain.Result) (domain.Result, error) {
+	prev, err := json.Marshal(normalizeJSONMap(result.PreviousState))
+	if err != nil {
+		return domain.Result{}, err
+	}
+	expected, err := json.Marshal(normalizeJSONMap(result.ExpectedState))
+	if err != nil {
+		return domain.Result{}, err
+	}
+	observed, err := json.Marshal(normalizeJSONMap(result.ObservedState))
+	if err != nil {
+		return domain.Result{}, err
+	}
+	adapterResponse, err := json.Marshal(normalizeJSONMap(result.AdapterResponse))
+	if err != nil {
+		return domain.Result{}, err
+	}
+	_, err = r.pool.Exec(ctx, `
+		INSERT INTO enforcement_results (
+			id, enforcement_request_id, success, changed, previous_state, expected_state, observed_state,
+			verification_status, adapter_response, duration_ms, error_code, error_message, created_at
+		)
+		VALUES ($1, NULLIF($2, '')::uuid, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8, $9::jsonb, $10, $11, $12, $13)
+	`, result.ID, result.EnforcementRequestID, result.Success, result.Changed, prev, expected, observed, result.VerificationStatus, adapterResponse, result.DurationMS, result.ErrorCode, result.ErrorMessage, result.CreatedAt)
+	if err != nil {
+		return domain.Result{}, err
+	}
+	if result.PreviousState == nil {
+		result.PreviousState = map[string]any{}
+	}
+	if result.ExpectedState == nil {
+		result.ExpectedState = map[string]any{}
+	}
+	if result.ObservedState == nil {
+		result.ObservedState = map[string]any{}
+	}
+	if result.AdapterResponse == nil {
+		result.AdapterResponse = map[string]any{}
+	}
+	return result, nil
+}
+
+func (r *PostgresRepository) ListRequests(ctx context.Context, limit, offset int) ([]domain.Request, error) {
+	return r.listRequests(ctx, "", limit, offset)
+}
+
+func (r *PostgresRepository) ListDeviceRequests(ctx context.Context, deviceID string, limit, offset int) ([]domain.Request, error) {
+	return r.listRequests(ctx, strings.TrimSpace(deviceID), limit, offset)
+}
+
+func (r *PostgresRepository) listRequests(ctx context.Context, deviceID string, limit, offset int) ([]domain.Request, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, COALESCE(device_id::text, ''), COALESCE(policy_decision_id::text, ''), COALESCE(switch_id::text, ''), COALESCE(port_id::text, ''),
+		       requested_action, target_vlan, previous_vlan, requested_by, request_source, mode, status, attempt_count,
+		       COALESCE(adapter, ''), COALESCE(command_summary, ''), COALESCE(error_code, ''), COALESCE(error_message, ''),
+		       requested_at, COALESCE(started_at, '0001-01-01T00:00:00Z'::timestamptz), COALESCE(completed_at, '0001-01-01T00:00:00Z'::timestamptz),
+		       COALESCE(verified_at, '0001-01-01T00:00:00Z'::timestamptz), COALESCE(rollback_of_request_id::text, ''), COALESCE(verification_status, ''),
+		       COALESCE(current_switch_id::text, ''), COALESCE(current_if_index, 0), COALESCE(current_interface_name, ''), COALESCE(target_device_mac, ''),
+		       COALESCE(metadata, '{}'::jsonb), created_at, updated_at
+		FROM enforcement_requests
+		WHERE ($1 = '' OR device_id = NULLIF($1, '')::uuid)
+		ORDER BY requested_at DESC
+		LIMIT $2 OFFSET $3
+	`, deviceID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]domain.Request, 0, limit)
+	for rows.Next() {
+		item, err := scanRequest(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *PostgresRepository) ListResultsByRequest(ctx context.Context, requestID string) ([]domain.Result, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, COALESCE(enforcement_request_id::text, ''), success, changed, previous_state, expected_state, observed_state,
+		       COALESCE(verification_status, ''), COALESCE(adapter_response, '{}'::jsonb), duration_ms, COALESCE(error_code, ''), COALESCE(error_message, ''), created_at
+		FROM enforcement_results
+		WHERE enforcement_request_id = NULLIF($1, '')::uuid
+		ORDER BY created_at DESC
+	`, strings.TrimSpace(requestID))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []domain.Result
+	for rows.Next() {
+		item, err := scanResult(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *PostgresRepository) FindRequestByID(ctx context.Context, id string) (*domain.Request, error) {
+	row := r.pool.QueryRow(ctx, `
+		SELECT id, COALESCE(device_id::text, ''), COALESCE(policy_decision_id::text, ''), COALESCE(switch_id::text, ''), COALESCE(port_id::text, ''),
+		       requested_action, target_vlan, previous_vlan, requested_by, request_source, mode, status, attempt_count,
+		       COALESCE(adapter, ''), COALESCE(command_summary, ''), COALESCE(error_code, ''), COALESCE(error_message, ''),
+		       requested_at, COALESCE(started_at, '0001-01-01T00:00:00Z'::timestamptz), COALESCE(completed_at, '0001-01-01T00:00:00Z'::timestamptz),
+		       COALESCE(verified_at, '0001-01-01T00:00:00Z'::timestamptz), COALESCE(rollback_of_request_id::text, ''), COALESCE(verification_status, ''),
+		       COALESCE(current_switch_id::text, ''), COALESCE(current_if_index, 0), COALESCE(current_interface_name, ''), COALESCE(target_device_mac, ''),
+		       COALESCE(metadata, '{}'::jsonb), created_at, updated_at
+		FROM enforcement_requests
+		WHERE id = NULLIF($1, '')::uuid
+		LIMIT 1
+	`, strings.TrimSpace(id))
+	item, err := scanRequest(row)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &item, nil
+}
+
+func (r *PostgresRepository) FindActiveRequest(ctx context.Context, policyDecisionID, action string, targetVLAN int) (*domain.Request, error) {
+	row := r.pool.QueryRow(ctx, `
+		SELECT id, COALESCE(device_id::text, ''), COALESCE(policy_decision_id::text, ''), COALESCE(switch_id::text, ''), COALESCE(port_id::text, ''),
+		       requested_action, target_vlan, previous_vlan, requested_by, request_source, mode, status, attempt_count,
+		       COALESCE(adapter, ''), COALESCE(command_summary, ''), COALESCE(error_code, ''), COALESCE(error_message, ''),
+		       requested_at, COALESCE(started_at, '0001-01-01T00:00:00Z'::timestamptz), COALESCE(completed_at, '0001-01-01T00:00:00Z'::timestamptz),
+		       COALESCE(verified_at, '0001-01-01T00:00:00Z'::timestamptz), COALESCE(rollback_of_request_id::text, ''), COALESCE(verification_status, ''),
+		       COALESCE(current_switch_id::text, ''), COALESCE(current_if_index, 0), COALESCE(current_interface_name, ''), COALESCE(target_device_mac, ''),
+		       COALESCE(metadata, '{}'::jsonb), created_at, updated_at
+		FROM enforcement_requests
+		WHERE policy_decision_id = NULLIF($1, '')::uuid
+		  AND requested_action = $2
+		  AND target_vlan = $3
+		  AND status IN ('pending', 'running')
+		ORDER BY requested_at DESC
+		LIMIT 1
+	`, strings.TrimSpace(policyDecisionID), strings.TrimSpace(action), targetVLAN)
+	item, err := scanRequest(row)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &item, nil
+}
+
+func (r *PostgresRepository) ClaimNextRequest(ctx context.Context, now time.Time) (*domain.Request, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	row := tx.QueryRow(ctx, `
+		SELECT id, COALESCE(device_id::text, ''), COALESCE(policy_decision_id::text, ''), COALESCE(switch_id::text, ''), COALESCE(port_id::text, ''),
+		       requested_action, target_vlan, previous_vlan, requested_by, request_source, mode, status, attempt_count,
+		       COALESCE(adapter, ''), COALESCE(command_summary, ''), COALESCE(error_code, ''), COALESCE(error_message, ''),
+		       requested_at, COALESCE(started_at, '0001-01-01T00:00:00Z'::timestamptz), COALESCE(completed_at, '0001-01-01T00:00:00Z'::timestamptz),
+		       COALESCE(verified_at, '0001-01-01T00:00:00Z'::timestamptz), COALESCE(rollback_of_request_id::text, ''), COALESCE(verification_status, ''),
+		       COALESCE(current_switch_id::text, ''), COALESCE(current_if_index, 0), COALESCE(current_interface_name, ''), COALESCE(target_device_mac, ''),
+		       COALESCE(metadata, '{}'::jsonb), created_at, updated_at
+		FROM enforcement_requests
+		WHERE status = 'pending'
+		ORDER BY requested_at ASC
+		FOR UPDATE SKIP LOCKED
+		LIMIT 1
+	`)
+	item, err := scanRequest(row)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			if err := tx.Commit(ctx); err != nil {
+				return nil, err
+			}
+			return nil, nil
+		}
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE enforcement_requests SET status = 'running', started_at = $2, updated_at = $2 WHERE id = $1`, item.ID, now); err != nil {
+		return nil, err
+	}
+	item.Status = domain.RequestStatusRunning
+	item.StartedAt = now
+	item.UpdatedAt = now
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
+func (r *PostgresRepository) MarkRequestStarted(ctx context.Context, id string, adapter string, startedAt time.Time) error {
+	_, err := r.pool.Exec(ctx, `UPDATE enforcement_requests SET status = 'running', adapter = $2, started_at = $3, updated_at = $3 WHERE id = NULLIF($1, '')::uuid`, strings.TrimSpace(id), strings.TrimSpace(adapter), startedAt)
+	return err
+}
+
+func (r *PostgresRepository) MarkRequestCompleted(ctx context.Context, id, status, errorCode, errorMessage, verificationStatus string, completedAt, verifiedAt time.Time) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE enforcement_requests
+		SET status = $2,
+		    error_code = $3,
+		    error_message = $4,
+		    verification_status = $5,
+		    completed_at = $6,
+		    verified_at = $7,
+		    updated_at = $6
+		WHERE id = NULLIF($1, '')::uuid
+	`, strings.TrimSpace(id), strings.TrimSpace(status), strings.TrimSpace(errorCode), strings.TrimSpace(errorMessage), strings.TrimSpace(verificationStatus), completedAt, nullableTime(verifiedAt))
+	return err
+}
+
+func (r *PostgresRepository) MarkRequestRetry(ctx context.Context, id, errorCode, errorMessage string, nextAttemptAt time.Time) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE enforcement_requests
+		SET status = 'pending',
+		    attempt_count = attempt_count + 1,
+		    error_code = $2,
+		    error_message = $3,
+		    requested_at = $4,
+		    updated_at = $4
+		WHERE id = NULLIF($1, '')::uuid
+	`, strings.TrimSpace(id), strings.TrimSpace(errorCode), strings.TrimSpace(errorMessage), nextAttemptAt)
+	return err
+}
+
+func (r *PostgresRepository) UpdateRequestPolicyBinding(ctx context.Context, id, policyDecisionID string) error {
+	_, err := r.pool.Exec(ctx, `UPDATE enforcement_requests SET policy_decision_id = NULLIF($2, '')::uuid, updated_at = NOW() WHERE id = NULLIF($1, '')::uuid`, strings.TrimSpace(id), strings.TrimSpace(policyDecisionID))
+	return err
+}
+
+func (r *PostgresRepository) UpdatePolicyDecisionEnforcement(ctx context.Context, policyDecisionID, requestID, status, errorMessage string, startedAt, completedAt, enforcedAt time.Time, requested bool) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE policy_decisions
+		SET enforcement_requested = $2,
+		    enforcement_request_id = NULLIF($3, '')::uuid,
+		    enforcement_status = $4,
+		    enforcement_started_at = $5,
+		    enforcement_completed_at = $6,
+		    enforcement_error = $7,
+		    enforced_at = $8
+		WHERE id = NULLIF($1, '')::uuid
+	`, strings.TrimSpace(policyDecisionID), requested, strings.TrimSpace(requestID), strings.TrimSpace(status), nullableTime(startedAt), nullableTime(completedAt), strings.TrimSpace(errorMessage), nullableTime(enforcedAt))
+	return err
+}
+
+func (r *PostgresRepository) UpdateDeviceEnforcementSnapshot(ctx context.Context, deviceID, action string, vlanID int, status, errorMessage string, observedAt time.Time) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE devices
+		SET last_enforcement_action = $2,
+		    last_enforcement_vlan = $3,
+		    last_enforcement_status = $4,
+		    last_enforcement_at = $5,
+		    last_enforcement_error = $6,
+		    applied_enforcement_state = CASE WHEN $4 = 'succeeded' THEN $2 ELSE applied_enforcement_state END,
+		    applied_enforcement_vlan = CASE WHEN $4 = 'succeeded' THEN $3 ELSE applied_enforcement_vlan END,
+		    updated_at = NOW()
+		WHERE id = NULLIF($1, '')::uuid
+	`, strings.TrimSpace(deviceID), strings.TrimSpace(action), vlanID, strings.TrimSpace(status), observedAt, strings.TrimSpace(errorMessage))
+	return err
+}
+
+func scanRequest(scanner interface{ Scan(dest ...any) error }) (domain.Request, error) {
+	var item domain.Request
+	var rawMetadata []byte
+	if err := scanner.Scan(&item.ID, &item.DeviceID, &item.PolicyDecisionID, &item.SwitchID, &item.PortID, &item.RequestedAction, &item.TargetVLAN, &item.PreviousVLAN, &item.RequestedBy, &item.RequestSource, &item.Mode, &item.Status, &item.AttemptCount, &item.Adapter, &item.CommandSummary, &item.ErrorCode, &item.ErrorMessage, &item.RequestedAt, &item.StartedAt, &item.CompletedAt, &item.VerifiedAt, &item.RollbackOfRequestID, &item.VerificationStatus, &item.CurrentSwitchID, &item.CurrentIfIndex, &item.CurrentInterfaceName, &item.TargetDeviceMAC, &rawMetadata, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		return domain.Request{}, err
+	}
+	_ = json.Unmarshal(rawMetadata, &item.Metadata)
+	if item.Metadata == nil {
+		item.Metadata = map[string]any{}
+	}
+	return item, nil
+}
+
+func scanResult(scanner interface{ Scan(dest ...any) error }) (domain.Result, error) {
+	var item domain.Result
+	var prev []byte
+	var expected []byte
+	var observed []byte
+	var adapter []byte
+	if err := scanner.Scan(&item.ID, &item.EnforcementRequestID, &item.Success, &item.Changed, &prev, &expected, &observed, &item.VerificationStatus, &adapter, &item.DurationMS, &item.ErrorCode, &item.ErrorMessage, &item.CreatedAt); err != nil {
+		return domain.Result{}, err
+	}
+	_ = json.Unmarshal(prev, &item.PreviousState)
+	_ = json.Unmarshal(expected, &item.ExpectedState)
+	_ = json.Unmarshal(observed, &item.ObservedState)
+	_ = json.Unmarshal(adapter, &item.AdapterResponse)
+	if item.PreviousState == nil {
+		item.PreviousState = map[string]any{}
+	}
+	if item.ExpectedState == nil {
+		item.ExpectedState = map[string]any{}
+	}
+	if item.ObservedState == nil {
+		item.ObservedState = map[string]any{}
+	}
+	if item.AdapterResponse == nil {
+		item.AdapterResponse = map[string]any{}
+	}
+	return item, nil
+}
+
+func normalizeJSONMap(value map[string]any) map[string]any {
+	if value == nil {
+		return map[string]any{}
+	}
+	return value
+}
+
+func nullableTime(value time.Time) any {
+	if value.IsZero() {
+		return nil
+	}
+	return value
 }

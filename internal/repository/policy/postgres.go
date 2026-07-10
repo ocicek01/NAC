@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -240,13 +241,13 @@ func (r *PostgresRepository) InsertDecision(ctx context.Context, decision domain
 		INSERT INTO policy_decisions (
 			id, device_id, port_event_id, policy_id, policy_name, decision_type, target_vlan,
 			enforcement_action, trust_score, trust_signals, reason_codes, explanation,
-			dry_run, enforcement_status, evaluation_duration_ms, created_at
+			dry_run, enforcement_status, enforcement_requested, enforcement_request_id, enforcement_started_at, enforcement_completed_at, enforcement_error, enforced_at, evaluation_duration_ms, created_at
 		)
 		VALUES (
 			$1, NULLIF($2, '')::uuid, NULLIF($3, '')::uuid, NULLIF($4, '')::uuid, $5, $6, $7,
-			$8, $9, $10::jsonb, $11::jsonb, $12, $13, $14, $15, $16
+			 $8, $9, $10::jsonb, $11::jsonb, $12, $13, $14, NULLIF($15, '')::uuid, $16, $17, $18, $19, $20, $21
 		)
-	`, decision.ID, decision.DeviceID, decision.PortEventID, decision.PolicyID, decision.PolicyName, decision.DecisionType, decision.TargetVLAN, decision.EnforcementAction, decision.TrustScore, signals, reasons, decision.Explanation, decision.DryRun, decision.EnforcementStatus, decision.EvaluationDurationMS, decision.CreatedAt)
+	`, decision.ID, decision.DeviceID, decision.PortEventID, decision.PolicyID, decision.PolicyName, decision.DecisionType, decision.TargetVLAN, decision.EnforcementAction, decision.TrustScore, signals, reasons, decision.Explanation, decision.DryRun, decision.EnforcementStatus, decision.EnforcementRequested, decision.EnforcementRequestID, nullableTime(decision.EnforcementStartedAt), nullableTime(decision.EnforcementCompletedAt), decision.EnforcementError, nullableTime(decision.EnforcedAt), decision.EvaluationDurationMS, decision.CreatedAt)
 	if err != nil {
 		return domain.Decision{}, err
 	}
@@ -414,4 +415,50 @@ func normalizePolicyStatus(enabled bool, status string) string {
 		return "active"
 	}
 	return status
+}
+
+func (r *PostgresRepository) FindDecisionByID(ctx context.Context, id string) (*domain.Decision, error) {
+	query := `
+		SELECT id, COALESCE(device_id::text, ''), COALESCE(port_event_id::text, ''), COALESCE(policy_id::text, ''),
+		       COALESCE(policy_name, ''), COALESCE(decision_type, ''), COALESCE(target_vlan, 0),
+		       COALESCE(enforcement_action, ''), COALESCE(trust_score, 0), COALESCE(trust_signals, '[]'::jsonb),
+		       COALESCE(reason_codes, '[]'::jsonb), COALESCE(explanation, ''), COALESCE(dry_run, true),
+		       COALESCE(enforcement_status, ''), COALESCE(enforcement_requested, false), COALESCE(enforcement_request_id::text, ''),
+		       COALESCE(enforcement_started_at, '0001-01-01T00:00:00Z'::timestamptz), COALESCE(enforcement_completed_at, '0001-01-01T00:00:00Z'::timestamptz),
+		       COALESCE(enforcement_error, ''), COALESCE(enforced_at, '0001-01-01T00:00:00Z'::timestamptz), COALESCE(evaluation_duration_ms, 0), created_at
+		FROM policy_decisions
+		WHERE id = $1
+		LIMIT 1
+	`
+	row := r.pool.QueryRow(ctx, query, strings.TrimSpace(id))
+	item, err := scanDecision(row)
+	if err != nil {
+		if strings.Contains(err.Error(), "no rows") {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &item, nil
+}
+
+func (r *PostgresRepository) UpdateDecisionEnforcement(ctx context.Context, decisionID, requestID, status, errorMessage string, startedAt, completedAt, enforcedAt time.Time, requested bool) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE policy_decisions
+		SET enforcement_requested = $2,
+		    enforcement_request_id = NULLIF($3, '')::uuid,
+		    enforcement_status = $4,
+		    enforcement_started_at = $5,
+		    enforcement_completed_at = $6,
+		    enforcement_error = $7,
+		    enforced_at = $8
+		WHERE id = NULLIF($1, '')::uuid
+	`, strings.TrimSpace(decisionID), requested, strings.TrimSpace(requestID), strings.TrimSpace(status), nullableTime(startedAt), nullableTime(completedAt), strings.TrimSpace(errorMessage), nullableTime(enforcedAt))
+	return err
+}
+
+func nullableTime(value time.Time) any {
+	if value.IsZero() {
+		return nil
+	}
+	return value
 }

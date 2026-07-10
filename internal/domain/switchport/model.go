@@ -20,6 +20,7 @@ type Port struct {
 	IsUplink             bool           `json:"is_uplink"`
 	IsTrunk              bool           `json:"is_trunk"`
 	TrunkSource          string         `json:"trunk_source"`
+	EnforcementProtected bool           `json:"enforcement_protected"`
 	VLANID               int            `json:"vlan_id"`
 	NativeVLAN           int            `json:"native_vlan"`
 	AllowedVLANs         []string       `json:"allowed_vlans"`

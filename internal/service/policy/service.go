@@ -250,3 +250,4 @@ func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (dom
 	item.UpdatedAt = time.Now().UTC()
 	return s.repository.Update(ctx, item)
 }
+

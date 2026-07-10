@@ -77,7 +77,7 @@ func (r *PostgresRepository) ReplaceBySwitch(ctx context.Context, switchID strin
 		)
 		VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-			$11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+			$11, $12, $13, $14,  $15, $16, $17, $18, $19, $20, $21,
 			$21, $22, $23::jsonb, $24, $25, $26, $27, $28::numeric, $29, NULLIF($30, '')::uuid,
 			$31, $32, $33, $34, $35::jsonb, $36::jsonb, NULLIF($37, '0001-01-01T00:00:00Z')::timestamptz, $38, $39, $40
 		)
@@ -153,7 +153,7 @@ func (r *PostgresRepository) ListBySwitch(ctx context.Context, switchID string) 
 		SELECT
 			id, switch_id, if_index, port_index, interface_name, interface_alias,
 			interface_description, port_label, interface_type, admin_status, oper_status,
-			status, port_mode, is_physical, is_uplink, is_trunk, trunk_source, vlan_id,
+			status, port_mode, is_physical, is_uplink, is_trunk, trunk_source, enforcement_protected, vlan_id,
 			native_vlan, allowed_vlans, voice_vlan, mac_count, mac_addresses, speed_bps,
 			speed_label, duplex, poe_enabled, COALESCE(poe_power_watts::text, '0'),
 			neighbor_protocol, COALESCE(neighbor_switch_id::text, ''), neighbor_switch_name,
@@ -177,7 +177,7 @@ func (r *PostgresRepository) FindBySwitchIfIndex(ctx context.Context, switchID s
 		SELECT
 			id, switch_id, if_index, port_index, interface_name, interface_alias,
 			interface_description, port_label, interface_type, admin_status, oper_status,
-			status, port_mode, is_physical, is_uplink, is_trunk, trunk_source, vlan_id,
+			status, port_mode, is_physical, is_uplink, is_trunk, trunk_source, enforcement_protected, vlan_id,
 			native_vlan, allowed_vlans, voice_vlan, mac_count, mac_addresses, speed_bps,
 			speed_label, duplex, poe_enabled, COALESCE(poe_power_watts::text, '0'),
 			neighbor_protocol, COALESCE(neighbor_switch_id::text, ''), neighbor_switch_name,
@@ -349,7 +349,7 @@ func (r *PostgresRepository) UpdateStatus(ctx context.Context, switchID string, 
 		RETURNING
 			id, switch_id, if_index, port_index, interface_name, interface_alias,
 			interface_description, port_label, interface_type, admin_status, oper_status,
-			status, port_mode, is_physical, is_uplink, is_trunk, trunk_source, vlan_id,
+			status, port_mode, is_physical, is_uplink, is_trunk, trunk_source, enforcement_protected, vlan_id,
 			native_vlan, allowed_vlans, voice_vlan, mac_count, mac_addresses, speed_bps,
 			speed_label, duplex, poe_enabled, COALESCE(poe_power_watts::text, '0'),
 			neighbor_protocol, COALESCE(neighbor_switch_id::text, ''), neighbor_switch_name,
