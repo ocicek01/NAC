@@ -269,6 +269,28 @@ func registerSwitchRoutes(mux *http.ServeMux, service switchService, portEndpoin
 	mux.HandleFunc("/api/v1/switches/", func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/v1/switches/")
 		switch {
+		case strings.Contains(path, "/ports/") && strings.HasSuffix(path, "/live") && r.Method == http.MethodGet:
+			trimmed := strings.Trim(strings.TrimSuffix(path, "/live"), "/")
+			parts := strings.Split(trimmed, "/ports/")
+			if len(parts) != 2 {
+				http.Error(w, "invalid switch port path", http.StatusBadRequest)
+				return
+			}
+			id := strings.TrimSpace(parts[0])
+			ifIndex, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+			if err != nil || ifIndex <= 0 {
+				http.Error(w, "valid if_index is required", http.StatusBadRequest)
+				return
+			}
+
+			item, err := service.LivePortLookup(r.Context(), id, ifIndex)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(item)
 		case strings.HasSuffix(path, "/live") && r.Method == http.MethodGet:
 			id := strings.Trim(strings.TrimSuffix(path, "/live"), "/")
 			if id == "" {
@@ -334,28 +356,6 @@ func registerSwitchRoutes(mux *http.ServeMux, service switchService, portEndpoin
 
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(summary)
-		case strings.Contains(path, "/ports/") && strings.HasSuffix(path, "/live") && r.Method == http.MethodGet:
-			trimmed := strings.Trim(strings.TrimSuffix(path, "/live"), "/")
-			parts := strings.Split(trimmed, "/ports/")
-			if len(parts) != 2 {
-				http.Error(w, "invalid switch port path", http.StatusBadRequest)
-				return
-			}
-			id := strings.TrimSpace(parts[0])
-			ifIndex, err := strconv.Atoi(strings.TrimSpace(parts[1]))
-			if err != nil || ifIndex <= 0 {
-				http.Error(w, "valid if_index is required", http.StatusBadRequest)
-				return
-			}
-
-			item, err := service.LivePortLookup(r.Context(), id, ifIndex)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(item)
 		default:
 			http.Error(w, "not found", http.StatusNotFound)
 		}
