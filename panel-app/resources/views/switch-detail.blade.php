@@ -1385,8 +1385,13 @@
             }
         }
 
-        async function refreshPortDetail(portId) {
-            const response = await fetch('/api/switch-ports/' + encodeURIComponent(String(portId)), {
+        async function refreshPortDetail(portId, options = {}) {
+            const url = new URL('/api/switch-ports/' + encodeURIComponent(String(portId)), window.location.origin);
+            if (options.fresh) {
+                url.searchParams.set('fresh', '1');
+            }
+
+            const response = await fetch(url.toString(), {
                 headers: {
                     'Accept': 'application/json',
                     'X-Requested-With': 'XMLHttpRequest'
@@ -1770,16 +1775,13 @@
                     'X-Requested-With': 'XMLHttpRequest'
                 }
             }).then(function () {
-                window.setTimeout(function () {
-                    refreshPortDetail(portId).catch(function (error) {
-                        console.error(error);
-                    });
-                }, 1500);
-                window.setTimeout(function () {
-                    refreshPortDetail(portId).catch(function (error) {
-                        console.error(error);
-                    });
-                }, 4000);
+                [750, 1500, 3000, 5000].forEach(function (delay) {
+                    window.setTimeout(function () {
+                        refreshPortDetail(portId, { fresh: true }).catch(function (error) {
+                            console.error(error);
+                        });
+                    }, delay);
+                });
             }).catch(function (error) {
                 console.error(error);
             });
@@ -2004,5 +2006,4 @@
     </script>
 </body>
 </html>
-
 

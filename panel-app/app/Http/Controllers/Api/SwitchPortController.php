@@ -23,12 +23,12 @@ class SwitchPortController extends Controller
     ) {
     }
 
-    public function show(SwitchPort $port): JsonResponse
+    public function show(Request $request, SwitchPort $port): JsonResponse
     {
         $port->loadMissing(['switch', 'currentLocation.endpoint']);
 
         return response()->json([
-            'data' => $this->switchStatsService->portDetail($port),
+            'data' => $this->switchStatsService->portDetail($port, false, $request->boolean('fresh')),
         ]);
     }
 
@@ -59,6 +59,7 @@ class SwitchPortController extends Controller
         }
 
         $result = $this->nacApiClient->refreshSwitchPortSnapshot((string) $resolved['id'], $lookupIfIndex);
+        $this->switchStatsService->forgetRemoteSwitchCaches($port->switch);
 
         $this->auditLogService->log('switch_port_live_refresh_requested', 'switch_port', $port->id, array_merge(
             $this->auditLogService->contextFromRequest($request),
@@ -170,5 +171,4 @@ class SwitchPortController extends Controller
         ], 202);
     }
 }
-
 

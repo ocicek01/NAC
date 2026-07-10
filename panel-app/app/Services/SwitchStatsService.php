@@ -275,8 +275,11 @@ class SwitchStatsService
         ];
     }
 
-    public function portDetail(SwitchPort $port, bool $withLiveLookup = false): array
+    public function portDetail(SwitchPort $port, bool $withLiveLookup = false, bool $fresh = false): array
     {
+        if ($fresh && $port->switch) {
+            $this->forgetRemoteSwitchCaches($port->switch);
+        }
         $goPorts = $port->switch ? $this->goPortsForSwitch($port->switch) : [];
         $goDevices = $port->switch ? $this->goDevicesForSwitch($port->switch) : [];
 
@@ -292,6 +295,13 @@ class SwitchStatsService
         }
 
         return $this->mergeLivePortLookup($port, $detail);
+    }
+
+    public function forgetRemoteSwitchCaches(NetworkSwitch $switch): void
+    {
+        Cache::forget($this->goPortsCacheKey($switch));
+        Cache::forget($this->goPortSummaryCacheKey($switch));
+        Cache::forget($this->goDevicesCacheKey($switch));
     }
 
     protected function mergeLivePortLookup(SwitchPort $port, array $detail): array
@@ -703,7 +713,7 @@ class SwitchStatsService
 
     protected function goPortsForSwitch(NetworkSwitch $switch): array
     {
-        $cacheKey = sprintf('nac:switch:%s:go-ports', $switch->id);
+        $cacheKey = $this->goPortsCacheKey($switch);
 
         return Cache::remember($cacheKey, now()->addSeconds($this->nacCacheTtlSeconds), function () use ($switch) {
             $client = $this->nacApi();
@@ -742,7 +752,7 @@ class SwitchStatsService
 
     protected function goPortSummaryForSwitch(NetworkSwitch $switch): array
     {
-        $cacheKey = sprintf('nac:switch:%s:go-port-summary', $switch->id);
+        $cacheKey = $this->goPortSummaryCacheKey($switch);
 
         return Cache::remember($cacheKey, now()->addSeconds($this->nacCacheTtlSeconds), function () use ($switch) {
             $client = $this->nacApi();
@@ -767,7 +777,7 @@ class SwitchStatsService
 
     protected function goDevicesForSwitch(NetworkSwitch $switch): array
     {
-        $cacheKey = sprintf('nac:switch:%s:go-devices', $switch->id);
+        $cacheKey = $this->goDevicesCacheKey($switch);
 
         return Cache::remember($cacheKey, now()->addSeconds($this->nacCacheTtlSeconds), function () use ($switch) {
             $client = $this->nacApi();
@@ -807,6 +817,21 @@ class SwitchStatsService
 
             return $indexed;
         });
+    }
+
+    protected function goPortsCacheKey(NetworkSwitch $switch): string
+    {
+        return sprintf('nac:switch:%s:go-ports', $switch->id);
+    }
+
+    protected function goPortSummaryCacheKey(NetworkSwitch $switch): string
+    {
+        return sprintf('nac:switch:%s:go-port-summary', $switch->id);
+    }
+
+    protected function goDevicesCacheKey(NetworkSwitch $switch): string
+    {
+        return sprintf('nac:switch:%s:go-devices', $switch->id);
     }
 
     protected function goPortForLocalPort(SwitchPort $port, array $goPorts): ?array
@@ -1619,6 +1644,4 @@ class SwitchStatsService
         ];
     }
 }
-
-
 
