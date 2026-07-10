@@ -23,13 +23,18 @@ const (
 
 const (
 	RequestStatusPending            = "pending"
+	RequestStatusQueued             = "queued"
 	RequestStatusRunning            = "running"
+	RequestStatusVerifying          = "verifying"
 	RequestStatusSucceeded          = "succeeded"
 	RequestStatusFailed             = "failed"
 	RequestStatusVerificationFailed = "verification_failed"
 	RequestStatusSkipped            = "skipped"
+	RequestStatusRetryScheduled     = "retry_scheduled"
 	RequestStatusCancelled          = "cancelled"
+	RequestStatusRollbackPending    = "rollback_pending"
 	RequestStatusRolledBack         = "rolled_back"
+	RequestStatusRollbackFailed     = "rollback_failed"
 )
 
 type Decision struct {
@@ -95,16 +100,25 @@ type Request struct {
 type Result struct {
 	ID                   string         `json:"id"`
 	EnforcementRequestID string         `json:"enforcement_request_id"`
+	AttemptNumber        int            `json:"attempt_number"`
+	Adapter              string         `json:"adapter"`
+	Transport            string         `json:"transport"`
+	Action               string         `json:"action"`
 	Success              bool           `json:"success"`
 	Changed              bool           `json:"changed"`
+	ExecutionStatus      string         `json:"execution_status"`
+	VerificationStatus   string         `json:"verification_status"`
 	PreviousState        map[string]any `json:"previous_state"`
 	ExpectedState        map[string]any `json:"expected_state"`
 	ObservedState        map[string]any `json:"observed_state"`
-	VerificationStatus   string         `json:"verification_status"`
+	CommandSummary       string         `json:"command_summary"`
 	AdapterResponse      map[string]any `json:"adapter_response"`
 	DurationMS           int64          `json:"duration_ms"`
 	ErrorCode            string         `json:"error_code"`
 	ErrorMessage         string         `json:"error_message"`
+	StartedAt            time.Time      `json:"started_at"`
+	CompletedAt          time.Time      `json:"completed_at"`
+	VerifiedAt           time.Time      `json:"verified_at"`
 	CreatedAt            time.Time      `json:"created_at"`
 }
 
@@ -138,6 +152,19 @@ type RollbackInput struct {
 type WorkerOutcome struct {
 	Request Request `json:"request"`
 	Result  Result  `json:"result"`
+}
+
+type WorkerStats struct {
+	Running                bool      `json:"running"`
+	QueueDepth             int       `json:"queue_depth"`
+	OldestPendingAgeSec    int64     `json:"oldest_pending_age_seconds"`
+	RunningRequestCount    int       `json:"running_request_count"`
+	FailedRequestCount     int       `json:"failed_request_count"`
+	RetryScheduledCount    int       `json:"retry_scheduled_count"`
+	LastSuccessfulAt       time.Time `json:"last_successful_at"`
+	LastWorkerError        string    `json:"last_worker_error"`
+	LastWorkerErrorAt      time.Time `json:"last_worker_error_at"`
+	LastWorkerHeartbeatAt  time.Time `json:"last_worker_heartbeat_at"`
 }
 
 type VLANPlan struct {

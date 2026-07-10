@@ -20,17 +20,22 @@ import (
 type phase31Repository interface {
 	InsertRequest(ctx context.Context, request domain.Request) (domain.Request, error)
 	InsertResult(ctx context.Context, result domain.Result) (domain.Result, error)
-	ListRequests(ctx context.Context, limit, offset int) ([]domain.Request, error)
+	ListRequests(ctx context.Context, filters domain.RequestFilters) ([]domain.Request, error)
 	ListDeviceRequests(ctx context.Context, deviceID string, limit, offset int) ([]domain.Request, error)
 	ListResultsByRequest(ctx context.Context, requestID string) ([]domain.Result, error)
 	FindRequestByID(ctx context.Context, id string) (*domain.Request, error)
 	FindActiveRequest(ctx context.Context, policyDecisionID, action string, targetVLAN int) (*domain.Request, error)
-	ClaimNextRequest(ctx context.Context, now time.Time) (*domain.Request, error)
+	ClaimNextRequest(ctx context.Context, now time.Time, staleBefore time.Time) (*domain.Request, error)
+	MarkRequestQueued(ctx context.Context, id string, queuedAt time.Time) error
 	MarkRequestStarted(ctx context.Context, id string, adapter string, startedAt time.Time) error
+	MarkRequestVerifying(ctx context.Context, id string, verifyingAt time.Time) error
 	MarkRequestCompleted(ctx context.Context, id, status, errorCode, errorMessage, verificationStatus string, completedAt, verifiedAt time.Time) error
-	MarkRequestRetry(ctx context.Context, id, errorCode, errorMessage string, nextAttemptAt time.Time) error
+	MarkRequestRetry(ctx context.Context, id, status, errorCode, errorMessage string, nextAttemptAt time.Time) error
+	CancelRequest(ctx context.Context, id, status, errorCode, errorMessage string, completedAt time.Time) error
+	CancelSupersededRequests(ctx context.Context, deviceID, keepRequestID, reason string) (int, error)
 	UpdatePolicyDecisionEnforcement(ctx context.Context, policyDecisionID, requestID, status, errorMessage string, startedAt, completedAt, enforcedAt time.Time, requested bool) error
-	UpdateDeviceEnforcementSnapshot(ctx context.Context, deviceID, action string, vlanID int, status, errorMessage string, observedAt time.Time) error
+	UpdateDeviceEnforcementSnapshot(ctx context.Context, deviceID, requestID, action string, vlanID int, status, errorMessage string, observedAt time.Time, verified bool) error
+	WorkerStats(ctx context.Context) (domain.WorkerStats, error)
 }
 
 type policyDecisionResolver interface {
@@ -94,11 +99,20 @@ func normalizeEnforcementConfig(cfg config.EnforcementConfig) config.Enforcement
 	if cfg.WorkerBatchSize <= 0 {
 		cfg.WorkerBatchSize = 20
 	}
+	if cfg.RetryBaseSeconds <= 0 {
+		cfg.RetryBaseSeconds = cfg.RetryBackoffSeconds
+	}
+	if cfg.RetryBaseSeconds <= 0 {
+		cfg.RetryBaseSeconds = 5
+	}
 	if cfg.RetryBackoffSeconds <= 0 {
-		cfg.RetryBackoffSeconds = 30
+		cfg.RetryBackoffSeconds = cfg.RetryBaseSeconds
 	}
 	if cfg.RequestTimeoutSeconds <= 0 {
 		cfg.RequestTimeoutSeconds = 15
+	}
+	if cfg.StaleRunningSeconds <= 0 {
+		cfg.StaleRunningSeconds = 300
 	}
 	if len(cfg.AdapterPriority) == 0 {
 		cfg.AdapterPriority = []string{"snmp"}
@@ -109,12 +123,29 @@ func normalizeEnforcementConfig(cfg config.EnforcementConfig) config.Enforcement
 	return cfg
 }
 
-func (s *Service) ListRequests(ctx context.Context, limit, offset int) ([]domain.Request, error) {
+func (s *Service) ListRequests(ctx context.Context, filters domain.RequestFilters) ([]domain.Request, error) {
 	repo, ok := s.repository.(phase31Repository)
 	if !ok {
 		return []domain.Request{}, nil
 	}
-	return repo.ListRequests(ctx, limit, offset)
+	return repo.ListRequests(ctx, filters)
+}
+
+func (s *Service) WorkerStats(ctx context.Context) (domain.WorkerStats, error) {
+	repo, ok := s.repository.(phase31Repository)
+	if !ok {
+		return domain.WorkerStats{}, nil
+	}
+	stats, err := repo.WorkerStats(ctx)
+	if err != nil {
+		return domain.WorkerStats{}, err
+	}
+	s.workerMu.Lock()
+	stats.LastWorkerError = s.lastWorkerError
+	stats.LastWorkerErrorAt = s.lastWorkerErrorAt
+	stats.LastWorkerHeartbeatAt = s.lastWorkerHeartbeatAt
+	s.workerMu.Unlock()
+	return stats, nil
 }
 
 func (s *Service) FindRequestByID(ctx context.Context, id string) (*domain.Request, error) {
@@ -144,10 +175,10 @@ func (s *Service) ListResultsByRequest(ctx context.Context, requestID string) ([
 func (s *Service) EnforcePolicyDecision(ctx context.Context, decisionID string, input domain.RequestInput) (domain.Request, error) {
 	repo, ok := s.repository.(phase31Repository)
 	if !ok {
-		return domain.Request{}, fmt.Errorf("phase 3.1 repository methods are not configured")
+		return domain.Request{}, fmt.Errorf("phase 3.2 repository methods are not configured")
 	}
 	if s.policies == nil || s.devices == nil {
-		return domain.Request{}, fmt.Errorf("phase 3.1 dependencies are not configured")
+		return domain.Request{}, fmt.Errorf("phase 3.2 dependencies are not configured")
 	}
 	decision, err := s.policies.FindDecisionByID(ctx, strings.TrimSpace(decisionID))
 	if err != nil {
@@ -174,7 +205,7 @@ func (s *Service) EnforcePolicyDecision(ctx context.Context, decisionID string, 
 	}
 	request := buildRequest(*device, *decision, port, action, targetVLAN, input, s.enforcementCfg.Mode)
 	request.CommandSummary = s.previewSummary(ctx, request, port)
-	status, reasonCode, reasonMessage := s.preflight(request, *device, port)
+	status, reasonCode, reasonMessage := s.preflight(request)
 	request.Status = status
 	request.ErrorCode = reasonCode
 	request.ErrorMessage = reasonMessage
@@ -182,22 +213,27 @@ func (s *Service) EnforcePolicyDecision(ctx context.Context, decisionID string, 
 	if err != nil {
 		return domain.Request{}, err
 	}
-	requested := status == domain.RequestStatusPending || status == domain.RequestStatusRunning
-	_ = repo.UpdatePolicyDecisionEnforcement(ctx, decision.ID, stored.ID, status, reasonMessage, time.Time{}, completionTimeFor(status), completionTimeFor(status), requested)
-	if status != domain.RequestStatusPending {
-		_, _ = repo.InsertResult(ctx, buildSkippedResult(stored, reasonCode, reasonMessage))
-		_ = repo.UpdateDeviceEnforcementSnapshot(ctx, device.ID, action, targetVLAN, status, reasonMessage, time.Now().UTC())
-		s.auditEvent(ctx, auditActionForStatus(status, reasonCode), statusLevel(status), stored, map[string]any{"reason": reasonMessage, "target_vlan": targetVLAN})
+	cancelledCount, cancelErr := repo.CancelSupersededRequests(ctx, device.ID, stored.ID, "superseded by newer decision")
+	if cancelErr == nil && cancelledCount > 0 {
+		s.auditEvent(ctx, "enforcement_request_superseded", "warning", stored, map[string]any{"cancelled_request_count": cancelledCount})
+	}
+	requested := stored.Status == domain.RequestStatusPending || stored.Status == domain.RequestStatusQueued || stored.Status == domain.RequestStatusRetryScheduled || stored.Status == domain.RequestStatusRollbackPending
+	_ = repo.UpdatePolicyDecisionEnforcement(ctx, decision.ID, stored.ID, stored.Status, stored.ErrorMessage, time.Time{}, completionTimeFor(stored.Status), enforcedAtFor(stored.Status, time.Now().UTC()), requested)
+	if stored.Status == domain.RequestStatusSkipped || stored.Status == domain.RequestStatusFailed || stored.Status == domain.RequestStatusCancelled {
+		result := buildTerminalResult(stored, domain.PortState{}, domain.PortState{}, stored.Status, stored.ErrorCode, stored.ErrorMessage, false, stored.Mode, map[string]any{"reason": stored.ErrorMessage})
+		_, _ = repo.InsertResult(ctx, result)
+		_ = repo.UpdateDeviceEnforcementSnapshot(ctx, device.ID, stored.ID, action, targetVLAN, stored.Status, stored.ErrorMessage, time.Now().UTC(), false)
+		s.auditEvent(ctx, auditActionForStatus(stored.Status, stored.ErrorCode), statusLevel(stored.Status), stored, map[string]any{"reason": stored.ErrorMessage, "target_vlan": targetVLAN})
 		return stored, nil
 	}
-	s.auditEvent(ctx, "enforcement_requested", "info", stored, map[string]any{"target_vlan": targetVLAN, "mode": stored.Mode})
+	s.auditEvent(ctx, "enforcement_queued", "info", stored, map[string]any{"target_vlan": targetVLAN, "mode": stored.Mode})
 	return stored, nil
 }
 
 func (s *Service) RetryRequestByID(ctx context.Context, id string) (*domain.Request, error) {
 	repo, ok := s.repository.(phase31Repository)
 	if !ok {
-		return nil, fmt.Errorf("phase 3.1 repository methods are not configured")
+		return nil, fmt.Errorf("phase 3.2 repository methods are not configured")
 	}
 	request, err := repo.FindRequestByID(ctx, strings.TrimSpace(id))
 	if err != nil || request == nil {
@@ -206,8 +242,8 @@ func (s *Service) RetryRequestByID(ctx context.Context, id string) (*domain.Requ
 	if request.AttemptCount >= s.enforcementCfg.MaxRetries {
 		return nil, fmt.Errorf("max retries exceeded")
 	}
-	next := time.Now().UTC().Add(time.Duration(s.enforcementCfg.RetryBackoffSeconds) * time.Second)
-	if err := repo.MarkRequestRetry(ctx, request.ID, "manual_retry", "manual retry requested", next); err != nil {
+	next := time.Now().UTC().Add(s.retryDelay(request.AttemptCount + 1))
+	if err := repo.MarkRequestRetry(ctx, request.ID, domain.RequestStatusRetryScheduled, "manual_retry", "manual retry requested", next); err != nil {
 		return nil, err
 	}
 	updated, _ := repo.FindRequestByID(ctx, request.ID)
@@ -217,10 +253,34 @@ func (s *Service) RetryRequestByID(ctx context.Context, id string) (*domain.Requ
 	return updated, nil
 }
 
+func (s *Service) CancelRequestByID(ctx context.Context, id string) (*domain.Request, error) {
+	repo, ok := s.repository.(phase31Repository)
+	if !ok {
+		return nil, fmt.Errorf("phase 3.2 repository methods are not configured")
+	}
+	request, err := repo.FindRequestByID(ctx, strings.TrimSpace(id))
+	if err != nil || request == nil {
+		return request, err
+	}
+	if request.Status == domain.RequestStatusRunning || request.Status == domain.RequestStatusVerifying {
+		return nil, fmt.Errorf("running request cannot be cancelled")
+	}
+	now := time.Now().UTC()
+	if err := repo.CancelRequest(ctx, request.ID, domain.RequestStatusCancelled, "cancelled_by_operator", "manual cancel requested", now); err != nil {
+		return nil, err
+	}
+	updated, _ := repo.FindRequestByID(ctx, request.ID)
+	if updated != nil {
+		_ = repo.UpdatePolicyDecisionEnforcement(ctx, updated.PolicyDecisionID, updated.ID, domain.RequestStatusCancelled, "manual cancel requested", updated.StartedAt, now, time.Time{}, true)
+		s.auditEvent(ctx, "enforcement_request_cancelled", "warning", *updated, map[string]any{"error_code": "cancelled_by_operator"})
+	}
+	return updated, nil
+}
+
 func (s *Service) RollbackRequestByID(ctx context.Context, id string, input domain.RollbackInput) (domain.Request, error) {
 	repo, ok := s.repository.(phase31Repository)
 	if !ok {
-		return domain.Request{}, fmt.Errorf("phase 3.1 repository methods are not configured")
+		return domain.Request{}, fmt.Errorf("phase 3.2 repository methods are not configured")
 	}
 	request, err := repo.FindRequestByID(ctx, strings.TrimSpace(id))
 	if err != nil {
@@ -232,13 +292,41 @@ func (s *Service) RollbackRequestByID(ctx context.Context, id string, input doma
 	if request.PreviousVLAN <= 0 {
 		return domain.Request{}, fmt.Errorf("previous vlan is not available for rollback")
 	}
-	rollbackInput := domain.RequestInput{RequestedBy: input.RequestedBy, RequestSource: firstNonEmpty(input.RequestSource, "manual"), ForceExecution: input.ForceExecution, Reason: input.Reason, TargetVLAN: request.PreviousVLAN, ActionOverride: domain.ActionRestorePreviousState}
-	rollback := domain.Request{ID: uuid.NewString(), DeviceID: request.DeviceID, PolicyDecisionID: request.PolicyDecisionID, SwitchID: request.SwitchID, PortID: request.PortID, RequestedAction: domain.ActionRestorePreviousState, TargetVLAN: request.PreviousVLAN, PreviousVLAN: request.TargetVLAN, RequestedBy: firstNonEmpty(rollbackInput.RequestedBy, "system"), RequestSource: rollbackInput.RequestSource, Mode: s.enforcementCfg.Mode, Status: domain.RequestStatusPending, RollbackOfRequestID: request.ID, CurrentSwitchID: request.CurrentSwitchID, CurrentIfIndex: request.CurrentIfIndex, CurrentInterfaceName: request.CurrentInterfaceName, TargetDeviceMAC: request.TargetDeviceMAC, RequestedAt: time.Now().UTC(), CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(), Metadata: map[string]any{"reason": rollbackInput.Reason}}
+	rollback := domain.Request{
+		ID:                   uuid.NewString(),
+		DeviceID:             request.DeviceID,
+		PolicyDecisionID:     request.PolicyDecisionID,
+		SwitchID:             request.SwitchID,
+		PortID:               request.PortID,
+		RequestedAction:      domain.ActionRestorePreviousState,
+		TargetVLAN:           request.PreviousVLAN,
+		PreviousVLAN:         request.TargetVLAN,
+		RequestedBy:          firstNonEmpty(input.RequestedBy, "system"),
+		RequestSource:        firstNonEmpty(input.RequestSource, "manual"),
+		Mode:                 s.enforcementCfg.Mode,
+		Status:               domain.RequestStatusRollbackPending,
+		RollbackOfRequestID:  request.ID,
+		CurrentSwitchID:      request.CurrentSwitchID,
+		CurrentIfIndex:       request.CurrentIfIndex,
+		CurrentInterfaceName: request.CurrentInterfaceName,
+		TargetDeviceMAC:      request.TargetDeviceMAC,
+		RequestedAt:          time.Now().UTC(),
+		CreatedAt:            time.Now().UTC(),
+		UpdatedAt:            time.Now().UTC(),
+		Metadata:             map[string]any{"reason": input.Reason, "rollback_of_request_id": request.ID},
+	}
 	stored, err := repo.InsertRequest(ctx, rollback)
 	if err != nil {
 		return domain.Request{}, err
 	}
-	s.auditEvent(ctx, "enforcement_rollback_requested", "info", stored, map[string]any{"rollback_of_request_id": request.ID, "target_vlan": stored.TargetVLAN})
+	if err := repo.MarkRequestRetry(ctx, stored.ID, domain.RequestStatusRollbackPending, "", "", stored.RequestedAt); err != nil {
+		return domain.Request{}, err
+	}
+	updated, _ := repo.FindRequestByID(ctx, stored.ID)
+	if updated != nil {
+		stored = *updated
+	}
+	s.auditEvent(ctx, "enforcement_rollback_started", "info", stored, map[string]any{"rollback_of_request_id": request.ID, "target_vlan": stored.TargetVLAN})
 	return stored, nil
 }
 
@@ -247,13 +335,22 @@ func (s *Service) ProcessNextRequest(ctx context.Context) (*domain.WorkerOutcome
 	if !ok {
 		return nil, nil
 	}
-	request, err := repo.ClaimNextRequest(ctx, time.Now().UTC())
-	if err != nil || request == nil {
+	now := time.Now().UTC()
+	request, err := repo.ClaimNextRequest(ctx, now, now.Add(-time.Duration(s.enforcementCfg.StaleRunningSeconds)*time.Second))
+	if err != nil {
+		s.recordWorkerError(err)
 		return nil, err
 	}
-	outcome, err := s.executeRequest(ctx, *request)
-	if err != nil {
-		return outcome, err
+	if request == nil {
+		s.recordWorkerHeartbeat()
+		return nil, nil
+	}
+	s.recordWorkerHeartbeat()
+	s.auditEvent(ctx, "enforcement_worker_claimed", "info", *request, nil)
+	outcome, execErr := s.executeRequest(ctx, *request)
+	if execErr != nil {
+		s.recordWorkerError(execErr)
+		return outcome, execErr
 	}
 	return outcome, nil
 }
@@ -277,9 +374,6 @@ func (s *Service) ProcessDueRequests(ctx context.Context, limit int) error {
 func (s *Service) executeRequest(ctx context.Context, request domain.Request) (*domain.WorkerOutcome, error) {
 	repo := s.repository.(phase31Repository)
 	startedAt := time.Now().UTC()
-	_ = repo.MarkRequestStarted(ctx, request.ID, "", startedAt)
-	request.StartedAt = startedAt
-	request.Status = domain.RequestStatusRunning
 	device, err := s.devices.FindByID(ctx, request.DeviceID)
 	if err != nil || device == nil {
 		return s.failRequest(ctx, request, "device_lookup_failed", firstError(err, "device not found"), false)
@@ -289,34 +383,90 @@ func (s *Service) executeRequest(ctx context.Context, request domain.Request) (*
 		return s.failRequest(ctx, request, "switch_lookup_failed", firstError(err, "switch not found"), false)
 	}
 	port, _ := s.lookupPort(ctx, *device)
+	validationStatus, validationCode, validationMessage := s.validateRequestForExecution(request, *device, port)
+	if validationStatus != "" {
+		s.auditEvent(ctx, "enforcement_validation_failed", statusLevel(validationStatus), request, map[string]any{"error_code": validationCode, "error": validationMessage})
+		return s.finishWithoutExecution(ctx, request, validationStatus, validationCode, validationMessage)
+	}
 	adapter := s.selectAdapter(*asset, request)
+	adapterName := ""
+	if adapter != nil {
+		adapterName = adapter.Name()
+	}
+	if err := repo.MarkRequestStarted(ctx, request.ID, adapterName, startedAt); err != nil {
+		return nil, err
+	}
+	request.Status = domain.RequestStatusRunning
+	request.StartedAt = startedAt
+	request.Adapter = adapterName
+	_ = repo.UpdatePolicyDecisionEnforcement(ctx, request.PolicyDecisionID, request.ID, domain.RequestStatusRunning, "", startedAt, time.Time{}, time.Time{}, true)
+	if request.RollbackOfRequestID != "" {
+		s.auditEvent(ctx, "enforcement_rollback_started", "info", request, map[string]any{"adapter": adapterName})
+	} else {
+		s.auditEvent(ctx, "enforcement_started", "info", request, map[string]any{"adapter": adapterName})
+	}
+	var initialState domain.PortState
+	if adapter != nil {
+		initialState, err = adapter.ReadState(ctx, *asset, port, request)
+		if err != nil {
+			return s.failRequest(ctx, request, "state_read_failed", err.Error(), true)
+		}
+		s.auditEvent(ctx, "enforcement_state_captured", "info", request, map[string]any{"state": stateMap(initialState)})
+	}
+	if request.Mode == domain.ModeDryRun {
+		result := buildTerminalResult(request, initialState, initialState, domain.RequestStatusSkipped, "dry_run", "enforcement mode is dry_run", false, "dry_run", map[string]any{"adapter": firstNonEmpty(adapterName, "dry_run")})
+		return s.completeRequest(ctx, request, result, domain.RequestStatusSkipped)
+	}
 	if adapter == nil {
 		return s.failRequest(ctx, request, "unsupported_vendor", "no adapter available", false)
 	}
-	request.Adapter = adapter.Name()
-	_ = repo.MarkRequestStarted(ctx, request.ID, request.Adapter, startedAt)
-	initialState, err := adapter.ReadState(ctx, *asset, port, request)
-	if err != nil {
-		return s.failRequest(ctx, request, "state_read_failed", err.Error(), true)
-	}
 	if alreadyDesired(request, initialState) {
-		result := buildSuccessResult(request, initialState, initialState, false, map[string]any{"reason": "already_in_desired_state", "adapter": adapter.Name()})
-		return s.completeRequest(ctx, request, result, domain.RequestStatusSucceeded)
+		result := buildTerminalResult(request, initialState, initialState, terminalSuccessStatus(request), "already_in_desired_state", "request already matches target state", false, "noop", map[string]any{"adapter": adapter.Name()})
+		return s.completeRequest(ctx, request, result, terminalSuccessStatus(request))
 	}
+	s.auditEvent(ctx, "enforcement_command_sent", "info", request, map[string]any{"adapter": adapter.Name(), "command_summary": request.CommandSummary})
 	execResponse, err := adapter.Execute(ctx, *asset, port, request)
 	if err != nil {
-		return s.failRequest(ctx, request, classifyExecutionError(err), err.Error(), isRetryableError(err))
+		code := classifyExecutionError(err)
+		s.auditEvent(ctx, "enforcement_execution_failed", "error", request, map[string]any{"error_code": code, "error": err.Error(), "retryable": isRetryableError(err)})
+		return s.failRequest(ctx, request, code, err.Error(), isRetryableError(err))
 	}
+	s.auditEvent(ctx, "enforcement_execution_succeeded", "success", request, map[string]any{"adapter": adapter.Name()})
+	verifyingAt := time.Now().UTC()
+	if err := repo.MarkRequestVerifying(ctx, request.ID, verifyingAt); err != nil {
+		return nil, err
+	}
+	request.Status = domain.RequestStatusVerifying
+	s.auditEvent(ctx, "enforcement_verification_started", "info", request, map[string]any{"adapter": adapter.Name()})
 	verifiedState, err := adapter.ReadState(ctx, *asset, port, request)
 	if err != nil {
-		return s.failRequest(ctx, request, "verification_failed", err.Error(), true)
+		return s.failRequest(ctx, request, "verification_temporarily_unavailable", err.Error(), true)
 	}
 	verificationStatus := verifyRequest(request, verifiedState)
 	result := buildResultFromExecution(request, initialState, verifiedState, verificationStatus, execResponse)
 	if verificationStatus != domain.RequestStatusSucceeded {
-		return s.completeRequest(ctx, request, result, domain.RequestStatusVerificationFailed)
+		s.auditEvent(ctx, "enforcement_verification_failed", "error", request, map[string]any{"observed_state": stateMap(verifiedState)})
+		return s.completeRequest(ctx, request, result, terminalVerificationFailureStatus(request))
 	}
-	return s.completeRequest(ctx, request, result, domain.RequestStatusSucceeded)
+	s.auditEvent(ctx, "enforcement_verification_succeeded", "success", request, map[string]any{"observed_state": stateMap(verifiedState)})
+	return s.completeRequest(ctx, request, result, terminalSuccessStatus(request))
+}
+
+func (s *Service) finishWithoutExecution(ctx context.Context, request domain.Request, status, code, message string) (*domain.WorkerOutcome, error) {
+	repo := s.repository.(phase31Repository)
+	now := time.Now().UTC()
+	result := buildTerminalResult(request, domain.PortState{}, domain.PortState{}, status, code, message, false, "validation", map[string]any{})
+	storedResult, err := repo.InsertResult(ctx, result)
+	if err != nil {
+		return nil, err
+	}
+	if err := repo.MarkRequestCompleted(ctx, request.ID, status, code, message, status, now, time.Time{}); err != nil {
+		return nil, err
+	}
+	_ = repo.UpdatePolicyDecisionEnforcement(ctx, request.PolicyDecisionID, request.ID, status, message, request.StartedAt, now, time.Time{}, true)
+	_ = repo.UpdateDeviceEnforcementSnapshot(ctx, request.DeviceID, request.ID, request.RequestedAction, request.TargetVLAN, status, message, now, false)
+	s.auditEvent(ctx, "enforcement_result_created", statusLevel(status), request, map[string]any{"result_id": storedResult.ID, "status": status})
+	return &domain.WorkerOutcome{Request: request, Result: storedResult}, nil
 }
 
 func (s *Service) completeRequest(ctx context.Context, request domain.Request, result domain.Result, status string) (*domain.WorkerOutcome, error) {
@@ -324,28 +474,28 @@ func (s *Service) completeRequest(ctx context.Context, request domain.Request, r
 	now := time.Now().UTC()
 	result.CreatedAt = now
 	result.EnforcementRequestID = request.ID
+	result.AttemptNumber = request.AttemptCount + 1
 	storedResult, err := repo.InsertResult(ctx, result)
 	if err != nil {
 		return nil, err
 	}
-	request.Status = status
-	request.VerificationStatus = result.VerificationStatus
-	request.CompletedAt = now
-	request.VerifiedAt = now
-	request.ErrorCode = result.ErrorCode
-	request.ErrorMessage = result.ErrorMessage
-	if err := repo.MarkRequestCompleted(ctx, request.ID, status, result.ErrorCode, result.ErrorMessage, result.VerificationStatus, now, now); err != nil {
+	verifiedAt := time.Time{}
+	if status == domain.RequestStatusSucceeded || status == domain.RequestStatusRolledBack {
+		verifiedAt = now
+	}
+	if err := repo.MarkRequestCompleted(ctx, request.ID, status, result.ErrorCode, result.ErrorMessage, result.VerificationStatus, now, verifiedAt); err != nil {
 		return nil, err
 	}
 	_ = repo.UpdatePolicyDecisionEnforcement(ctx, request.PolicyDecisionID, request.ID, status, result.ErrorMessage, request.StartedAt, now, enforcedAtFor(status, now), true)
-	_ = repo.UpdateDeviceEnforcementSnapshot(ctx, request.DeviceID, request.RequestedAction, request.TargetVLAN, status, result.ErrorMessage, now)
-	action := "enforcement_succeeded"
-	level := "success"
-	if status == domain.RequestStatusVerificationFailed {
-		action = "enforcement_verification_failed"
-		level = "error"
-	}
-	s.auditEvent(ctx, action, level, request, map[string]any{"verification_status": result.VerificationStatus, "changed": result.Changed, "target_vlan": request.TargetVLAN})
+	verified := status == domain.RequestStatusSucceeded || status == domain.RequestStatusRolledBack
+	_ = repo.UpdateDeviceEnforcementSnapshot(ctx, request.DeviceID, request.ID, request.RequestedAction, request.TargetVLAN, status, result.ErrorMessage, now, verified)
+	s.auditEvent(ctx, "enforcement_result_created", statusLevel(status), request, map[string]any{"result_id": storedResult.ID, "status": status})
+	request.Status = status
+	request.CompletedAt = now
+	request.VerifiedAt = verifiedAt
+	request.ErrorCode = result.ErrorCode
+	request.ErrorMessage = result.ErrorMessage
+	request.VerificationStatus = result.VerificationStatus
 	return &domain.WorkerOutcome{Request: request, Result: storedResult}, nil
 }
 
@@ -353,19 +503,49 @@ func (s *Service) failRequest(ctx context.Context, request domain.Request, code,
 	repo := s.repository.(phase31Repository)
 	now := time.Now().UTC()
 	if retryable && request.AttemptCount < s.enforcementCfg.MaxRetries {
-		next := now.Add(time.Duration(s.enforcementCfg.RetryBackoffSeconds) * time.Second)
-		_ = repo.MarkRequestRetry(ctx, request.ID, code, message, next)
-		_ = repo.UpdatePolicyDecisionEnforcement(ctx, request.PolicyDecisionID, request.ID, domain.RequestStatusPending, message, request.StartedAt, time.Time{}, time.Time{}, true)
+		next := now.Add(s.retryDelay(request.AttemptCount + 1))
+		_ = repo.MarkRequestRetry(ctx, request.ID, domain.RequestStatusRetryScheduled, code, message, next)
+		_ = repo.UpdatePolicyDecisionEnforcement(ctx, request.PolicyDecisionID, request.ID, domain.RequestStatusRetryScheduled, message, request.StartedAt, time.Time{}, time.Time{}, true)
 		s.auditEvent(ctx, "enforcement_retry_scheduled", "warning", request, map[string]any{"error_code": code, "error": message, "retry_at": next})
 		return &domain.WorkerOutcome{Request: request, Result: domain.Result{}}, nil
 	}
-	result := domain.Result{ID: uuid.NewString(), EnforcementRequestID: request.ID, Success: false, Changed: false, PreviousState: map[string]any{}, ExpectedState: map[string]any{}, ObservedState: map[string]any{}, VerificationStatus: domain.RequestStatusFailed, AdapterResponse: map[string]any{}, DurationMS: 0, ErrorCode: code, ErrorMessage: message, CreatedAt: now}
-	_, _ = repo.InsertResult(ctx, result)
-	_ = repo.MarkRequestCompleted(ctx, request.ID, domain.RequestStatusFailed, code, message, domain.RequestStatusFailed, now, time.Time{})
-	_ = repo.UpdatePolicyDecisionEnforcement(ctx, request.PolicyDecisionID, request.ID, domain.RequestStatusFailed, message, request.StartedAt, now, time.Time{}, true)
-	_ = repo.UpdateDeviceEnforcementSnapshot(ctx, request.DeviceID, request.RequestedAction, request.TargetVLAN, domain.RequestStatusFailed, message, now)
-	s.auditEvent(ctx, "enforcement_failed", "error", request, map[string]any{"error_code": code, "error": message})
-	return &domain.WorkerOutcome{Request: request, Result: result}, errors.New(message)
+	status := terminalFailureStatus(request)
+	result := buildTerminalResult(request, domain.PortState{}, domain.PortState{}, status, code, message, false, "failed", map[string]any{})
+	storedResult, _ := repo.InsertResult(ctx, result)
+	_ = repo.MarkRequestCompleted(ctx, request.ID, status, code, message, status, now, time.Time{})
+	_ = repo.UpdatePolicyDecisionEnforcement(ctx, request.PolicyDecisionID, request.ID, status, message, request.StartedAt, now, time.Time{}, true)
+	_ = repo.UpdateDeviceEnforcementSnapshot(ctx, request.DeviceID, request.ID, request.RequestedAction, request.TargetVLAN, status, message, now, false)
+	if retryable {
+		s.auditEvent(ctx, "enforcement_retry_exhausted", "error", request, map[string]any{"error_code": code, "error": message})
+	} else {
+		s.auditEvent(ctx, "enforcement_execution_failed", "error", request, map[string]any{"error_code": code, "error": message})
+	}
+	return &domain.WorkerOutcome{Request: request, Result: storedResult}, errors.New(message)
+}
+
+func (s *Service) validateRequestForExecution(request domain.Request, device devicedomain.Device, port *switchportdomain.Port) (string, string, string) {
+	if s.enforcementCfg.Mode == domain.ModeDisabled {
+		return domain.RequestStatusSkipped, "enforcement_disabled", "enforcement mode is disabled"
+	}
+	if request.RequestedAction == domain.ActionNone || request.RequestedAction == domain.ActionMonitorOnly {
+		return domain.RequestStatusSkipped, "monitor_only", "monitor-only decision does not require enforcement"
+	}
+	if port != nil && isProtectedPort(*port) {
+		return domain.RequestStatusSkipped, "protected_port", "protected port"
+	}
+	if requiresVLAN(request.RequestedAction) && request.TargetVLAN <= 0 {
+		return terminalFailureStatus(request), "invalid_target_vlan", "target vlan is invalid"
+	}
+	if request.Mode == domain.ModePilot && !s.withinPilotScope(request, device, port) {
+		return domain.RequestStatusSkipped, "pilot_scope_denied", "request is outside pilot scope"
+	}
+	if !s.actionAllowed(request.RequestedAction) {
+		return terminalFailureStatus(request), "unsupported_action", "action is not allow-listed"
+	}
+	if !s.vlanAllowed(request.TargetVLAN) {
+		return terminalFailureStatus(request), "invalid_target_vlan", "target vlan is not allow-listed"
+	}
+	return "", "", ""
 }
 
 func (s *Service) lookupPort(ctx context.Context, device devicedomain.Device) (*switchportdomain.Port, error) {
@@ -387,24 +567,20 @@ func buildRequest(device devicedomain.Device, decision policydomain.Decision, po
 	return domain.Request{ID: uuid.NewString(), DeviceID: device.ID, PolicyDecisionID: decision.ID, SwitchID: device.CurrentSwitchID, PortID: portID, RequestedAction: action, TargetVLAN: targetVLAN, PreviousVLAN: previousVLAN, RequestedBy: firstNonEmpty(input.RequestedBy, "system"), RequestSource: firstNonEmpty(input.RequestSource, "policy_engine"), Mode: mode, Status: domain.RequestStatusPending, AttemptCount: 0, RequestedAt: now, CurrentSwitchID: device.CurrentSwitchID, CurrentIfIndex: device.CurrentIfIndex, CurrentInterfaceName: device.CurrentInterfaceName, TargetDeviceMAC: device.MACAddress, Metadata: metadata, CreatedAt: now, UpdatedAt: now}
 }
 
-func buildSkippedResult(request domain.Request, code, message string) domain.Result {
+func buildTerminalResult(request domain.Request, previous, observed domain.PortState, status, code, message string, changed bool, executionStatus string, response map[string]any) domain.Result {
 	now := time.Now().UTC()
-	return domain.Result{ID: uuid.NewString(), EnforcementRequestID: request.ID, Success: false, Changed: false, PreviousState: map[string]any{}, ExpectedState: map[string]any{"action": request.RequestedAction, "target_vlan": request.TargetVLAN}, ObservedState: map[string]any{}, VerificationStatus: request.Status, AdapterResponse: map[string]any{}, DurationMS: 0, ErrorCode: code, ErrorMessage: message, CreatedAt: now}
-}
-
-func buildSuccessResult(request domain.Request, previous, observed domain.PortState, changed bool, response map[string]any) domain.Result {
-	now := time.Now().UTC()
-	return domain.Result{ID: uuid.NewString(), EnforcementRequestID: request.ID, Success: true, Changed: changed, PreviousState: stateMap(previous), ExpectedState: expectedStateMap(request), ObservedState: stateMap(observed), VerificationStatus: domain.RequestStatusSucceeded, AdapterResponse: response, DurationMS: 0, CreatedAt: now}
+	return domain.Result{ID: uuid.NewString(), EnforcementRequestID: request.ID, AttemptNumber: request.AttemptCount + 1, Adapter: request.Adapter, Transport: request.Adapter, Action: request.RequestedAction, Success: status == domain.RequestStatusSucceeded || status == domain.RequestStatusRolledBack, Changed: changed, ExecutionStatus: executionStatus, PreviousState: stateMap(previous), ExpectedState: expectedStateMap(request), ObservedState: stateMap(observed), VerificationStatus: status, CommandSummary: request.CommandSummary, AdapterResponse: response, DurationMS: 0, ErrorCode: code, ErrorMessage: message, StartedAt: request.StartedAt, CompletedAt: now, CreatedAt: now}
 }
 
 func buildResultFromExecution(request domain.Request, previous, observed domain.PortState, verificationStatus string, response map[string]any) domain.Result {
-	res := buildSuccessResult(request, previous, observed, true, response)
-	res.VerificationStatus = verificationStatus
-	res.Success = verificationStatus == domain.RequestStatusSucceeded
-	if !res.Success {
-		res.ErrorCode = "verification_failed"
-		res.ErrorMessage = "switch state does not match expected state"
+	now := time.Now().UTC()
+	res := domain.Result{ID: uuid.NewString(), EnforcementRequestID: request.ID, AttemptNumber: request.AttemptCount + 1, Adapter: request.Adapter, Transport: request.Adapter, Action: request.RequestedAction, Success: verificationStatus == domain.RequestStatusSucceeded, Changed: true, ExecutionStatus: "completed", PreviousState: stateMap(previous), ExpectedState: expectedStateMap(request), ObservedState: stateMap(observed), VerificationStatus: verificationStatus, CommandSummary: request.CommandSummary, AdapterResponse: response, DurationMS: 0, StartedAt: request.StartedAt, CompletedAt: now, CreatedAt: now}
+	if verificationStatus == domain.RequestStatusSucceeded {
+		res.VerifiedAt = now
+		return res
 	}
+	res.ErrorCode = "verification_failed"
+	res.ErrorMessage = "switch state does not match expected state"
 	return res
 }
 
@@ -479,30 +655,12 @@ func (s *Service) resolveTargetVLAN(decision policydomain.Decision, device devic
 	return 0, nil
 }
 
-func (s *Service) preflight(request domain.Request, device devicedomain.Device, port *switchportdomain.Port) (string, string, string) {
+func (s *Service) preflight(request domain.Request) (string, string, string) {
 	if s.enforcementCfg.Mode == domain.ModeDisabled {
 		return domain.RequestStatusSkipped, "enforcement_disabled", "enforcement mode is disabled"
 	}
 	if request.RequestedAction == domain.ActionNone || request.RequestedAction == domain.ActionMonitorOnly {
-		return domain.RequestStatusSkipped, "dry_run", "monitor-only decision does not require enforcement"
-	}
-	if port != nil && isProtectedPort(*port) {
-		return domain.RequestStatusSkipped, "protected_port", "protected port"
-	}
-	if requiresVLAN(request.RequestedAction) && request.TargetVLAN <= 0 {
-		return domain.RequestStatusSkipped, "invalid_target_vlan", "target vlan is invalid"
-	}
-	if s.enforcementCfg.Mode == domain.ModeDryRun {
-		return domain.RequestStatusSkipped, "dry_run", "enforcement mode is dry_run"
-	}
-	if s.enforcementCfg.Mode == domain.ModePilot && !s.withinPilotScope(request, device, port) {
-		return domain.RequestStatusSkipped, "outside_pilot_scope", "request is outside pilot scope"
-	}
-	if !s.actionAllowed(request.RequestedAction) {
-		return domain.RequestStatusSkipped, "action_not_allowed", "action is not allow-listed"
-	}
-	if !s.vlanAllowed(request.TargetVLAN) {
-		return domain.RequestStatusSkipped, "invalid_target_vlan", "target vlan is not allow-listed"
+		return domain.RequestStatusSkipped, "monitor_only", "monitor-only decision does not require enforcement"
 	}
 	return domain.RequestStatusPending, "", ""
 }
@@ -664,36 +822,55 @@ func containsCI(values []string, candidate string) bool {
 
 func auditActionForStatus(status, code string) string {
 	if code == "protected_port" {
-		return "protected_port_action_blocked"
-	}
-	if code == "invalid_target_vlan" {
-		return "invalid_target_vlan_blocked"
+		return "enforcement_validation_failed"
 	}
 	if status == domain.RequestStatusSkipped {
 		return "enforcement_skipped"
+	}
+	if status == domain.RequestStatusCancelled {
+		return "enforcement_request_cancelled"
 	}
 	return "enforcement_requested"
 }
 
 func statusLevel(status string) string {
-	if status == domain.RequestStatusSkipped {
+	switch status {
+	case domain.RequestStatusSkipped, domain.RequestStatusCancelled:
 		return "warning"
+	case domain.RequestStatusFailed, domain.RequestStatusVerificationFailed, domain.RequestStatusRollbackFailed:
+		return "error"
+	default:
+		return "info"
 	}
-	return "info"
 }
 
 func (s *Service) auditEvent(ctx context.Context, action, status string, request domain.Request, payload map[string]any) {
 	if s == nil || s.audit == nil {
 		return
 	}
-	_ = s.audit.Record(ctx, action, status, "enforcement_request", request.ID, request.SwitchID, request.TargetDeviceMAC, payload)
+	data := map[string]any{
+		"request_id":         request.ID,
+		"device_id":          request.DeviceID,
+		"port_id":            request.PortID,
+		"policy_decision_id": request.PolicyDecisionID,
+		"requested_action":   request.RequestedAction,
+		"target_vlan":        request.TargetVLAN,
+		"current_if_index":   request.CurrentIfIndex,
+		"current_interface":  request.CurrentInterfaceName,
+	}
+	for k, v := range payload {
+		data[k] = v
+	}
+	_ = s.audit.Record(ctx, action, status, "enforcement_request", request.ID, request.SwitchID, request.TargetDeviceMAC, data)
 }
 
 func completionTimeFor(status string) time.Time {
-	if status == domain.RequestStatusPending || status == domain.RequestStatusRunning {
+	switch status {
+	case domain.RequestStatusPending, domain.RequestStatusQueued, domain.RequestStatusRunning, domain.RequestStatusVerifying, domain.RequestStatusRetryScheduled, domain.RequestStatusRollbackPending:
 		return time.Time{}
+	default:
+		return time.Now().UTC()
 	}
-	return time.Now().UTC()
 }
 
 func enforcedAtFor(status string, now time.Time) time.Time {
@@ -712,6 +889,8 @@ func classifyExecutionError(err error) string {
 		return "permission_denied"
 	case strings.Contains(message, "auth"):
 		return "authentication_failed"
+	case strings.Contains(message, "unsupported"):
+		return "unsupported_action"
 	default:
 		return "execution_failed"
 	}
@@ -719,7 +898,7 @@ func classifyExecutionError(err error) string {
 
 func isRetryableError(err error) bool {
 	message := strings.ToLower(strings.TrimSpace(err.Error()))
-	return strings.Contains(message, "timeout") || strings.Contains(message, "temporary") || strings.Contains(message, "connection")
+	return strings.Contains(message, "timeout") || strings.Contains(message, "temporary") || strings.Contains(message, "connection") || strings.Contains(message, "unavailable")
 }
 
 func firstNonEmpty(values ...string) string {
@@ -736,4 +915,37 @@ func firstError(err error, fallback string) string {
 		return err.Error()
 	}
 	return fallback
+}
+
+func terminalSuccessStatus(request domain.Request) string {
+	if strings.TrimSpace(request.RollbackOfRequestID) != "" {
+		return domain.RequestStatusRolledBack
+	}
+	return domain.RequestStatusSucceeded
+}
+
+func terminalFailureStatus(request domain.Request) string {
+	if strings.TrimSpace(request.RollbackOfRequestID) != "" {
+		return domain.RequestStatusRollbackFailed
+	}
+	return domain.RequestStatusFailed
+}
+
+func terminalVerificationFailureStatus(request domain.Request) string {
+	if strings.TrimSpace(request.RollbackOfRequestID) != "" {
+		return domain.RequestStatusRollbackFailed
+	}
+	return domain.RequestStatusVerificationFailed
+}
+
+func (s *Service) retryDelay(attempt int) time.Duration {
+	if attempt <= 0 {
+		attempt = 1
+	}
+	base := s.enforcementCfg.RetryBaseSeconds
+	if base <= 0 {
+		base = 5
+	}
+	multiplier := 1 << (attempt - 1)
+	return time.Duration(base*multiplier) * time.Second
 }

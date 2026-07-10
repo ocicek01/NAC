@@ -128,7 +128,7 @@ func registerPolicyRoutes(mux *http.ServeMux, service policyService) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, http.StatusOK, items)
+		writeJSON(w, http.StatusOK, toPolicyDecisionResponses(items))
 	})
 }
 

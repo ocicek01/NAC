@@ -6,40 +6,40 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	domain "nac/internal/domain/enforcement"
 )
 
 type enforcementService interface {
-	ListRequests(ctx context.Context, limit, offset int) ([]domain.Request, error)
+	ListRequests(ctx context.Context, filters domain.RequestFilters) ([]domain.Request, error)
 	FindRequestByID(ctx context.Context, id string) (*domain.Request, error)
 	ListResultsByRequest(ctx context.Context, requestID string) ([]domain.Result, error)
 	ListDeviceRequests(ctx context.Context, deviceID string, limit, offset int) ([]domain.Request, error)
 	EnforcePolicyDecision(ctx context.Context, decisionID string, input domain.RequestInput) (domain.Request, error)
 	RetryRequestByID(ctx context.Context, id string) (*domain.Request, error)
+	CancelRequestByID(ctx context.Context, id string) (*domain.Request, error)
 	RollbackRequestByID(ctx context.Context, id string, input domain.RollbackInput) (domain.Request, error)
-}
-
-type enforceDecisionRequest struct {
-	ForceExecution bool   `json:"force_execution"`
-	RequestedBy    string `json:"requested_by"`
-	RequestSource  string `json:"request_source"`
-	Reason         string `json:"reason"`
-	TargetVLAN     int    `json:"target_vlan"`
-	ActionOverride string `json:"action_override"`
-}
-
-type rollbackRequest struct {
-	ForceExecution bool   `json:"force_execution"`
-	RequestedBy    string `json:"requested_by"`
-	RequestSource  string `json:"request_source"`
-	Reason         string `json:"reason"`
+	WorkerStats(ctx context.Context) (domain.WorkerStats, error)
 }
 
 func registerEnforcementRoutes(mux *http.ServeMux, service enforcementService) {
 	if service == nil {
 		return
 	}
+
+	mux.HandleFunc("/api/v1/enforcement-worker/health", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		stats, err := service.WorkerStats(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"running": stats.Running, "queue_depth": stats.QueueDepth, "oldest_pending_age_seconds": stats.OldestPendingAgeSec, "running_request_count": stats.RunningRequestCount, "failed_request_count": stats.FailedRequestCount, "retry_scheduled_count": stats.RetryScheduledCount, "last_successful_at": nullableTime(stats.LastSuccessfulAt), "last_worker_error": stats.LastWorkerError, "last_worker_error_at": nullableTime(stats.LastWorkerErrorAt), "last_worker_heartbeat_at": nullableTime(stats.LastWorkerHeartbeatAt)})
+	})
 
 	mux.HandleFunc("/api/v1/enforcement-requests", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -51,12 +51,21 @@ func registerEnforcementRoutes(mux *http.ServeMux, service enforcementService) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		items, err := service.ListRequests(r.Context(), limit, offset)
+		filters := domain.RequestFilters{Limit: limit, Offset: offset, DeviceID: strings.TrimSpace(r.URL.Query().Get("device_id")), SwitchID: strings.TrimSpace(r.URL.Query().Get("switch_id")), Status: strings.TrimSpace(r.URL.Query().Get("status")), Mode: strings.TrimSpace(r.URL.Query().Get("mode")), Action: strings.TrimSpace(r.URL.Query().Get("action"))}
+		if filters.DateFrom, err = parseOptionalRFC3339(r.URL.Query().Get("date_from")); err != nil {
+			http.Error(w, "invalid date_from", http.StatusBadRequest)
+			return
+		}
+		if filters.DateTo, err = parseOptionalRFC3339(r.URL.Query().Get("date_to")); err != nil {
+			http.Error(w, "invalid date_to", http.StatusBadRequest)
+			return
+		}
+		items, err := service.ListRequests(r.Context(), filters)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, http.StatusOK, items)
+		writeJSON(w, http.StatusOK, toEnforcementRequestResponses(items))
 	})
 
 	mux.HandleFunc("/api/v1/enforcement-requests/", func(w http.ResponseWriter, r *http.Request) {
@@ -81,7 +90,7 @@ func registerEnforcementRoutes(mux *http.ServeMux, service enforcementService) {
 				http.NotFound(w, r)
 				return
 			}
-			writeJSON(w, http.StatusOK, item)
+			writeJSON(w, http.StatusOK, toEnforcementRequestResponse(*item))
 			return
 		}
 		switch {
@@ -91,7 +100,21 @@ func registerEnforcementRoutes(mux *http.ServeMux, service enforcementService) {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-			writeJSON(w, http.StatusOK, items)
+			limit, offset, err := parseLimitOffset(r, 50, 500)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if offset > len(items) {
+				items = []domain.Result{}
+			} else {
+				end := offset + limit
+				if end > len(items) {
+					end = len(items)
+				}
+				items = items[offset:end]
+			}
+			writeJSON(w, http.StatusOK, toEnforcementResultResponses(items))
 			return
 		case r.Method == http.MethodPost && parts[1] == "retry":
 			item, err := service.RetryRequestByID(r.Context(), id)
@@ -99,22 +122,28 @@ func registerEnforcementRoutes(mux *http.ServeMux, service enforcementService) {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			writeJSON(w, http.StatusAccepted, item)
+			writeJSON(w, http.StatusAccepted, toEnforcementRequestResponse(*item))
 			return
-		case r.Method == http.MethodPost && parts[1] == "rollback":
-			var payload rollbackRequest
-			if r.Body != nil {
-				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil && err.Error() != "EOF" {
-					http.Error(w, "invalid json body", http.StatusBadRequest)
-					return
-				}
-			}
-			item, err := service.RollbackRequestByID(r.Context(), id, domain.RollbackInput{RequestedBy: payload.RequestedBy, RequestSource: payload.RequestSource, Reason: payload.Reason, ForceExecution: payload.ForceExecution})
+		case r.Method == http.MethodPost && parts[1] == "cancel":
+			item, err := service.CancelRequestByID(r.Context(), id)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			writeJSON(w, http.StatusAccepted, item)
+			writeJSON(w, http.StatusAccepted, toEnforcementRequestResponse(*item))
+			return
+		case r.Method == http.MethodPost && parts[1] == "rollback":
+			payload, err := decodeJSONMap(r)
+			if err != nil {
+				http.Error(w, "invalid json body", http.StatusBadRequest)
+				return
+			}
+			item, err := service.RollbackRequestByID(r.Context(), id, domain.RollbackInput{RequestedBy: readString(payload, "requested_by"), RequestSource: readString(payload, "request_source"), Reason: readString(payload, "reason"), ForceExecution: readBool(payload, "force_execution")})
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, http.StatusAccepted, toEnforcementRequestResponse(item))
 			return
 		default:
 			http.NotFound(w, r)
@@ -130,23 +159,21 @@ func registerEnforcementRoutes(mux *http.ServeMux, service enforcementService) {
 			return
 		}
 		decisionID := strings.TrimSpace(parts[0])
-		var payload enforceDecisionRequest
-		if r.Body != nil {
-			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil && err.Error() != "EOF" {
-				http.Error(w, "invalid json body", http.StatusBadRequest)
-				return
-			}
+		payload, err := decodeJSONMap(r)
+		if err != nil {
+			http.Error(w, "invalid json body", http.StatusBadRequest)
+			return
 		}
-		item, err := service.EnforcePolicyDecision(r.Context(), decisionID, domain.RequestInput{RequestedBy: payload.RequestedBy, RequestSource: payload.RequestSource, Reason: payload.Reason, TargetVLAN: payload.TargetVLAN, ActionOverride: payload.ActionOverride, ForceExecution: payload.ForceExecution})
+		item, err := service.EnforcePolicyDecision(r.Context(), decisionID, domain.RequestInput{RequestedBy: readString(payload, "requested_by"), RequestSource: readString(payload, "request_source"), Reason: readString(payload, "reason"), TargetVLAN: readInt(payload, "target_vlan"), ActionOverride: readString(payload, "action_override"), ForceExecution: readBool(payload, "force_execution")})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		status := http.StatusAccepted
-		if item.Status == domain.RequestStatusSkipped || item.Status == domain.RequestStatusFailed {
+		if item.Status == domain.RequestStatusSkipped || item.Status == domain.RequestStatusFailed || item.Status == domain.RequestStatusCancelled {
 			status = http.StatusOK
 		}
-		writeJSON(w, status, item)
+		writeJSON(w, status, toEnforcementRequestResponse(item))
 	})
 }
 
@@ -156,4 +183,51 @@ func parsePositiveInt(raw string, fallback int) int {
 		return fallback
 	}
 	return parsed
+}
+
+func parseOptionalRFC3339(raw string) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, nil
+	}
+	parsed, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return parsed.UTC(), nil
+}
+
+func decodeJSONMap(r *http.Request) (map[string]any, error) {
+	payload := map[string]any{}
+	if r.Body == nil {
+		return payload, nil
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil && err.Error() != "EOF" {
+		return nil, err
+	}
+	return payload, nil
+}
+
+func readString(payload map[string]any, key string) string {
+	if value, ok := payload[key].(string); ok {
+		return strings.TrimSpace(value)
+	}
+	return ""
+}
+
+func readBool(payload map[string]any, key string) bool {
+	if value, ok := payload[key].(bool); ok {
+		return value
+	}
+	return false
+}
+
+func readInt(payload map[string]any, key string) int {
+	if value, ok := payload[key].(float64); ok {
+		return int(value)
+	}
+	if value, ok := payload[key].(int); ok {
+		return value
+	}
+	return 0
 }

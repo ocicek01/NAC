@@ -77,7 +77,9 @@ type EnforcementConfig struct {
 	AutoRollback          bool
 	WorkerBatchSize       int
 	RetryBackoffSeconds   int
+	RetryBaseSeconds      int
 	RequestTimeoutSeconds int
+	StaleRunningSeconds   int
 	AdapterPriority       []string
 	MockAdapterEnabled    bool
 	DefaultRestrictedVLAN int
@@ -103,7 +105,7 @@ func Load() (Config, error) {
 		Feature:         FeatureConfig{Option82CorrelationEnabled: getEnvAsBool("FEATURE_OPTION82_CORRELATION_ENABLED", false), AutoEnforcementExecution: getEnvAsBool("FEATURE_AUTO_ENFORCEMENT_EXECUTION", false)},
 		PostEnforcement: PostEnforcementConfig{IPLearningEnabled: getEnvAsBool("POST_ENFORCEMENT_IP_LEARNING_ENABLED", false), IPLearningWaitSec: getEnvAsInt("POST_ENFORCEMENT_IP_LEARNING_WAIT_SECONDS", 30), IPRecheckSec: getEnvAsInt("POST_ENFORCEMENT_IP_RECHECK_SECONDS", 10), PortBounceEnabled: getEnvAsBool("POST_ENFORCEMENT_PORT_BOUNCE_ENABLED", false), PortBounceDelaySec: getEnvAsInt("POST_ENFORCEMENT_PORT_BOUNCE_DELAY_SECONDS", 3), MaxMACCountForBounce: getEnvAsInt("POST_ENFORCEMENT_MAX_MAC_COUNT_FOR_BOUNCE", 1)},
 		Policy:          PolicyConfig{EnforcementEnabled: getEnvAsBool("POLICY_ENFORCEMENT_ENABLED", false), DefaultDryRun: getEnvAsBool("POLICY_DEFAULT_DRY_RUN", true), ThresholdAllow: getEnvAsInt("POLICY_THRESHOLD_ALLOW", 80), ThresholdMonitor: getEnvAsInt("POLICY_THRESHOLD_MONITOR", 60), ThresholdRestricted: getEnvAsInt("POLICY_THRESHOLD_RESTRICTED", 40), ThresholdRegistration: getEnvAsInt("POLICY_THRESHOLD_REGISTRATION", 20), TrustBaseScore: getEnvAsInt("POLICY_TRUST_BASE_SCORE", 50), TrustLDAPRegistryMatch: getEnvAsInt("POLICY_TRUST_LDAP_REGISTRY_MATCH", 20), TrustRegisteredOwner: getEnvAsInt("POLICY_TRUST_REGISTERED_OWNER", 10), TrustKnownDeviceType: getEnvAsInt("POLICY_TRUST_KNOWN_DEVICE_TYPE", 10), TrustDepartmentPresent: getEnvAsInt("POLICY_TRUST_DEPARTMENT_PRESENT", 5), TrustDefaultVLANPresent: getEnvAsInt("POLICY_TRUST_DEFAULT_VLAN_PRESENT", 5), TrustStableAttachment: getEnvAsInt("POLICY_TRUST_STABLE_ATTACHMENT", 10), TrustLDAPNotFound: getEnvAsInt("POLICY_TRUST_LDAP_NOT_FOUND", -15), TrustUnknownDeviceType: getEnvAsInt("POLICY_TRUST_UNKNOWN_DEVICE_TYPE", -10), TrustRapidPortMovement: getEnvAsInt("POLICY_TRUST_RAPID_PORT_MOVEMENT", -20), TrustPreviousQuarantine: getEnvAsInt("POLICY_TRUST_PREVIOUS_QUARANTINE", -20), TrustIPMACAnomaly: getEnvAsInt("POLICY_TRUST_IP_MAC_ANOMALY", -25), TrustPortProfileMismatch: getEnvAsInt("POLICY_TRUST_PORT_PROFILE_MISMATCH", -15), TrustRepeatedEnrichmentError: getEnvAsInt("POLICY_TRUST_REPEATED_ENRICHMENT_ERROR", -10)},
-		Enforcement:     EnforcementConfig{Mode: getEnv("ENFORCEMENT_MODE", "dry_run"), AllowedActions: getEnvAsCSV("ENFORCEMENT_ALLOWED_ACTIONS"), AllowedSwitches: getEnvAsCSV("ENFORCEMENT_ALLOWED_SWITCHES"), AllowedPorts: getEnvAsCSV("ENFORCEMENT_ALLOWED_PORTS"), AllowedVLANs: getEnvAsIntCSV("ENFORCEMENT_ALLOWED_VLANS"), AllowedDeviceIDs: getEnvAsCSV("ENFORCEMENT_ALLOWED_DEVICE_IDS"), AllowedMACs: getEnvAsCSV("ENFORCEMENT_ALLOWED_MACS"), MaxRetries: getEnvAsInt("ENFORCEMENT_MAX_RETRIES", 3), AutoRollback: getEnvAsBool("ENFORCEMENT_AUTO_ROLLBACK", false), WorkerBatchSize: getEnvAsInt("ENFORCEMENT_WORKER_BATCH_SIZE", 20), RetryBackoffSeconds: getEnvAsInt("ENFORCEMENT_RETRY_BACKOFF_SECONDS", 30), RequestTimeoutSeconds: getEnvAsInt("ENFORCEMENT_REQUEST_TIMEOUT_SECONDS", 15), AdapterPriority: getEnvAsCSV("ENFORCEMENT_ADAPTER_PRIORITY"), MockAdapterEnabled: getEnvAsBool("ENFORCEMENT_MOCK_ADAPTER_ENABLED", false), DefaultRestrictedVLAN: getEnvAsInt("ENFORCEMENT_DEFAULT_RESTRICTED_VLAN", 0), DefaultQuarantineVLAN: getEnvAsInt("ENFORCEMENT_DEFAULT_QUARANTINE_VLAN", 0)},
+		Enforcement:     EnforcementConfig{Mode: getEnv("ENFORCEMENT_MODE", "dry_run"), AllowedActions: getEnvAsCSV("ENFORCEMENT_ALLOWED_ACTIONS"), AllowedSwitches: getEnvAsCSV("ENFORCEMENT_ALLOWED_SWITCHES"), AllowedPorts: getEnvAsCSV("ENFORCEMENT_ALLOWED_PORTS"), AllowedVLANs: getEnvAsIntCSV("ENFORCEMENT_ALLOWED_VLANS"), AllowedDeviceIDs: getEnvAsCSV("ENFORCEMENT_ALLOWED_DEVICE_IDS"), AllowedMACs: getEnvAsCSV("ENFORCEMENT_ALLOWED_MACS"), MaxRetries: getEnvAsInt("ENFORCEMENT_MAX_RETRIES", 3), AutoRollback: getEnvAsBool("ENFORCEMENT_AUTO_ROLLBACK", false), WorkerBatchSize: getEnvAsInt("ENFORCEMENT_WORKER_BATCH_SIZE", 20), RetryBackoffSeconds: getEnvAsInt("ENFORCEMENT_RETRY_BACKOFF_SECONDS", 30), RetryBaseSeconds: getEnvAsInt("ENFORCEMENT_RETRY_BASE_SECONDS", getEnvAsInt("ENFORCEMENT_RETRY_BACKOFF_SECONDS", 30)), RequestTimeoutSeconds: getEnvAsInt("ENFORCEMENT_REQUEST_TIMEOUT_SECONDS", 15), StaleRunningSeconds: getEnvAsInt("ENFORCEMENT_STALE_RUNNING_SECONDS", 300), AdapterPriority: getEnvAsCSV("ENFORCEMENT_ADAPTER_PRIORITY"), MockAdapterEnabled: getEnvAsBool("ENFORCEMENT_MOCK_ADAPTER_ENABLED", false), DefaultRestrictedVLAN: getEnvAsInt("ENFORCEMENT_DEFAULT_RESTRICTED_VLAN", 0), DefaultQuarantineVLAN: getEnvAsInt("ENFORCEMENT_DEFAULT_QUARANTINE_VLAN", 0)},
 	}
 	if cfg.Postgres.Database == "" || cfg.Postgres.User == "" {
 		return Config{}, fmt.Errorf("postgres configuration is incomplete")
@@ -179,3 +181,6 @@ func getEnvAsIntCSV(key string) []int {
 	}
 	return out
 }
+
+
+

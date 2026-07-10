@@ -25,11 +25,15 @@ func TestEnforcePolicyDecisionDryRunCreatesSkippedRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnforcePolicyDecision returned error: %v", err)
 	}
-	if request.Status != domain.RequestStatusSkipped {
-		t.Fatalf("expected skipped request, got %q", request.Status)
+	if request.Status != domain.RequestStatusPending {
+		t.Fatalf("expected pending request, got %q", request.Status)
 	}
-	if len(repo.results) != 1 {
-		t.Fatalf("expected one skipped result, got %d", len(repo.results))
+	outcome, err := service.ProcessNextRequest(context.Background())
+	if err != nil {
+		t.Fatalf("ProcessNextRequest returned error: %v", err)
+	}
+	if outcome == nil || outcome.Request.Status != domain.RequestStatusSkipped {
+		t.Fatalf("expected skipped outcome, got %+v", outcome)
 	}
 }
 
@@ -42,8 +46,15 @@ func TestEnforcePolicyDecisionProtectedPortIsSkipped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnforcePolicyDecision returned error: %v", err)
 	}
-	if request.ErrorCode != "protected_port" {
-		t.Fatalf("expected protected_port error code, got %q", request.ErrorCode)
+	if request.Status != domain.RequestStatusPending {
+		t.Fatalf("expected pending request, got %q", request.Status)
+	}
+	outcome, err := service.ProcessNextRequest(context.Background())
+	if err != nil {
+		t.Fatalf("ProcessNextRequest returned error: %v", err)
+	}
+	if outcome == nil || outcome.Result.ErrorCode != "protected_port" {
+		t.Fatalf("expected protected_port result, got %+v", outcome)
 	}
 }
 
@@ -135,7 +146,7 @@ func (s *stubEnforcementRepository) InsertResult(ctx context.Context, result dom
 	s.results = append(s.results, result)
 	return result, nil
 }
-func (s *stubEnforcementRepository) ListRequests(ctx context.Context, limit, offset int) ([]domain.Request, error) {
+func (s *stubEnforcementRepository) ListRequests(ctx context.Context, filters domain.RequestFilters) ([]domain.Request, error) {
 	return append([]domain.Request{}, s.requests...), nil
 }
 func (s *stubEnforcementRepository) ListDeviceRequests(ctx context.Context, deviceID string, limit, offset int) ([]domain.Request, error) {
@@ -174,7 +185,7 @@ func (s *stubEnforcementRepository) FindActiveRequest(ctx context.Context, polic
 	}
 	return nil, nil
 }
-func (s *stubEnforcementRepository) ClaimNextRequest(ctx context.Context, now time.Time) (*domain.Request, error) {
+func (s *stubEnforcementRepository) ClaimNextRequest(ctx context.Context, now time.Time, staleBefore time.Time) (*domain.Request, error) {
 	for i := range s.requests {
 		if s.requests[i].Status == domain.RequestStatusPending {
 			s.requests[i].Status = domain.RequestStatusRunning
@@ -208,10 +219,10 @@ func (s *stubEnforcementRepository) MarkRequestCompleted(ctx context.Context, id
 	}
 	return nil
 }
-func (s *stubEnforcementRepository) MarkRequestRetry(ctx context.Context, id, errorCode, errorMessage string, nextAttemptAt time.Time) error {
+func (s *stubEnforcementRepository) MarkRequestRetry(ctx context.Context, id, status, errorCode, errorMessage string, nextAttemptAt time.Time) error {
 	for i := range s.requests {
 		if s.requests[i].ID == id {
-			s.requests[i].Status = domain.RequestStatusPending
+			s.requests[i].Status = status
 			s.requests[i].AttemptCount++
 			s.requests[i].ErrorCode = errorCode
 			s.requests[i].ErrorMessage = errorMessage
@@ -226,7 +237,22 @@ func (s *stubEnforcementRepository) UpdateRequestPolicyBinding(ctx context.Conte
 func (s *stubEnforcementRepository) UpdatePolicyDecisionEnforcement(ctx context.Context, decisionID, requestID, status, errorMessage string, startedAt, completedAt, enforcedAt time.Time, requested bool) error {
 	return nil
 }
-func (s *stubEnforcementRepository) UpdateDeviceEnforcementSnapshot(ctx context.Context, deviceID, action string, vlanID int, status, errorMessage string, observedAt time.Time) error {
+func (s *stubEnforcementRepository) MarkRequestQueued(ctx context.Context, id string, queuedAt time.Time) error {
+	return nil
+}
+func (s *stubEnforcementRepository) MarkRequestVerifying(ctx context.Context, id string, verifyingAt time.Time) error {
+	return nil
+}
+func (s *stubEnforcementRepository) CancelRequest(ctx context.Context, id, status, errorCode, errorMessage string, completedAt time.Time) error {
+	return nil
+}
+func (s *stubEnforcementRepository) CancelSupersededRequests(ctx context.Context, deviceID, keepRequestID, reason string) (int, error) {
+	return 0, nil
+}
+func (s *stubEnforcementRepository) WorkerStats(ctx context.Context) (domain.WorkerStats, error) {
+	return domain.WorkerStats{}, nil
+}
+func (s *stubEnforcementRepository) UpdateDeviceEnforcementSnapshot(ctx context.Context, deviceID, requestID, action string, vlanID int, status, errorMessage string, observedAt time.Time, verified bool) error {
 	return nil
 }
 

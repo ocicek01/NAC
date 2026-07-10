@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -55,18 +56,22 @@ type SessionResolver interface {
 }
 
 type Service struct {
-	repository     Repository
-	switches       SwitchCapabilityResolver
-	sessions       SessionResolver
-	ssh            SSHExecutor
-	snmp           SNMPEnforcer
-	coa            CoAExecutor
-	enforcementCfg config.EnforcementConfig
-	policies       policyDecisionResolver
-	devices        deviceStateResolver
-	ports          portResolver
-	audit          auditRecorder
-	adapters       map[string]Adapter
+	repository            Repository
+	switches              SwitchCapabilityResolver
+	sessions              SessionResolver
+	ssh                   SSHExecutor
+	snmp                  SNMPEnforcer
+	coa                   CoAExecutor
+	enforcementCfg        config.EnforcementConfig
+	policies              policyDecisionResolver
+	devices               deviceStateResolver
+	ports                 portResolver
+	audit                 auditRecorder
+	adapters              map[string]Adapter
+	workerMu              sync.Mutex
+	lastWorkerError       string
+	lastWorkerErrorAt     time.Time
+	lastWorkerHeartbeatAt time.Time
 }
 
 func NewService(repository Repository, switches SwitchCapabilityResolver, sessions SessionResolver, radiusCfg config.RadiusConfig) *Service {
@@ -358,4 +363,23 @@ func deriveDecisionState(policyAction string, now time.Time) (string, bool, stri
 	default:
 		return "simulated", false, "not-required", time.Time{}
 	}
+}
+
+func (s *Service) recordWorkerHeartbeat() {
+	if s == nil {
+		return
+	}
+	s.workerMu.Lock()
+	s.lastWorkerHeartbeatAt = time.Now().UTC()
+	s.workerMu.Unlock()
+}
+
+func (s *Service) recordWorkerError(err error) {
+	if s == nil || err == nil {
+		return
+	}
+	s.workerMu.Lock()
+	s.lastWorkerError = err.Error()
+	s.lastWorkerErrorAt = time.Now().UTC()
+	s.workerMu.Unlock()
 }

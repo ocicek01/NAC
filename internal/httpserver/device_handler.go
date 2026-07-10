@@ -161,7 +161,21 @@ func registerDeviceRoutes(mux *http.ServeMux, service deviceService) {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
 				}
-				writeJSON(w, http.StatusOK, items)
+				writeJSON(w, http.StatusOK, toPolicyDecisionResponses(items))
+				return
+			}
+			if r.Method == http.MethodGet && parts[1] == "enforcement-history" {
+				limit, offset, err := parseLimitOffset(r, 50, 200)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				items, err := service.ListDeviceRequests(r.Context(), identifier, limit, offset)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				writeJSON(w, http.StatusOK, toEnforcementRequestResponses(items))
 				return
 			}
 		}

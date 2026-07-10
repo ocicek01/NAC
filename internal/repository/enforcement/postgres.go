@@ -667,11 +667,16 @@ func (r *PostgresRepository) InsertResult(ctx context.Context, result domain.Res
 	}
 	_, err = r.pool.Exec(ctx, `
 		INSERT INTO enforcement_results (
-			id, enforcement_request_id, success, changed, previous_state, expected_state, observed_state,
-			verification_status, adapter_response, duration_ms, error_code, error_message, created_at
+			id, enforcement_request_id, attempt_number, adapter, transport, action, success, changed, execution_status,
+			previous_state, expected_state, observed_state, verification_status, command_summary, adapter_response,
+			duration_ms, error_code, error_message, started_at, completed_at, verified_at, created_at
 		)
-		VALUES ($1, NULLIF($2, '')::uuid, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8, $9::jsonb, $10, $11, $12, $13)
-	`, result.ID, result.EnforcementRequestID, result.Success, result.Changed, prev, expected, observed, result.VerificationStatus, adapterResponse, result.DurationMS, result.ErrorCode, result.ErrorMessage, result.CreatedAt)
+		VALUES (
+			$1, NULLIF($2, '')::uuid, $3, $4, $5, $6, $7, $8, $9,
+			$10::jsonb, $11::jsonb, $12::jsonb, $13, $14, $15::jsonb,
+			$16, $17, $18, $19, $20, $21, $22
+		)
+	`, result.ID, result.EnforcementRequestID, result.AttemptNumber, result.Adapter, result.Transport, result.Action, result.Success, result.Changed, result.ExecutionStatus, prev, expected, observed, result.VerificationStatus, result.CommandSummary, adapterResponse, result.DurationMS, result.ErrorCode, result.ErrorMessage, nullableTime(result.StartedAt), nullableTime(result.CompletedAt), nullableTime(result.VerifiedAt), result.CreatedAt)
 	if err != nil {
 		return domain.Result{}, err
 	}
@@ -690,25 +695,19 @@ func (r *PostgresRepository) InsertResult(ctx context.Context, result domain.Res
 	return result, nil
 }
 
-func (r *PostgresRepository) ListRequests(ctx context.Context, limit, offset int) ([]domain.Request, error) {
-	return r.listRequests(ctx, "", limit, offset)
-}
-
-func (r *PostgresRepository) ListDeviceRequests(ctx context.Context, deviceID string, limit, offset int) ([]domain.Request, error) {
-	return r.listRequests(ctx, strings.TrimSpace(deviceID), limit, offset)
-}
-
-func (r *PostgresRepository) listRequests(ctx context.Context, deviceID string, limit, offset int) ([]domain.Request, error) {
+func (r *PostgresRepository) ListRequests(ctx context.Context, filters domain.RequestFilters) ([]domain.Request, error) {
+	limit := filters.Limit
 	if limit <= 0 {
 		limit = 50
 	}
 	if limit > 200 {
 		limit = 200
 	}
+	offset := filters.Offset
 	if offset < 0 {
 		offset = 0
 	}
-	rows, err := r.pool.Query(ctx, `
+	query := `
 		SELECT id, COALESCE(device_id::text, ''), COALESCE(policy_decision_id::text, ''), COALESCE(switch_id::text, ''), COALESCE(port_id::text, ''),
 		       requested_action, target_vlan, previous_vlan, requested_by, request_source, mode, status, attempt_count,
 		       COALESCE(adapter, ''), COALESCE(command_summary, ''), COALESCE(error_code, ''), COALESCE(error_message, ''),
@@ -718,9 +717,16 @@ func (r *PostgresRepository) listRequests(ctx context.Context, deviceID string, 
 		       COALESCE(metadata, '{}'::jsonb), created_at, updated_at
 		FROM enforcement_requests
 		WHERE ($1 = '' OR device_id = NULLIF($1, '')::uuid)
+		  AND ($2 = '' OR switch_id = NULLIF($2, '')::uuid)
+		  AND ($3 = '' OR LOWER(status) = LOWER($3))
+		  AND ($4 = '' OR LOWER(mode) = LOWER($4))
+		  AND ($5 = '' OR LOWER(requested_action) = LOWER($5))
+		  AND ($6::timestamptz IS NULL OR created_at >= $6)
+		  AND ($7::timestamptz IS NULL OR created_at <= $7)
 		ORDER BY requested_at DESC
-		LIMIT $2 OFFSET $3
-	`, deviceID, limit, offset)
+		LIMIT $8 OFFSET $9
+	`
+	rows, err := r.pool.Query(ctx, query, strings.TrimSpace(filters.DeviceID), strings.TrimSpace(filters.SwitchID), strings.TrimSpace(filters.Status), strings.TrimSpace(filters.Mode), strings.TrimSpace(filters.Action), nullableTime(filters.DateFrom), nullableTime(filters.DateTo), limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -736,13 +742,20 @@ func (r *PostgresRepository) listRequests(ctx context.Context, deviceID string, 
 	return items, rows.Err()
 }
 
+func (r *PostgresRepository) ListDeviceRequests(ctx context.Context, deviceID string, limit, offset int) ([]domain.Request, error) {
+	return r.ListRequests(ctx, domain.RequestFilters{DeviceID: strings.TrimSpace(deviceID), Limit: limit, Offset: offset})
+}
+
 func (r *PostgresRepository) ListResultsByRequest(ctx context.Context, requestID string) ([]domain.Result, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, COALESCE(enforcement_request_id::text, ''), success, changed, previous_state, expected_state, observed_state,
-		       COALESCE(verification_status, ''), COALESCE(adapter_response, '{}'::jsonb), duration_ms, COALESCE(error_code, ''), COALESCE(error_message, ''), created_at
+		SELECT id, COALESCE(enforcement_request_id::text, ''), attempt_number, COALESCE(adapter, ''), COALESCE(transport, ''), COALESCE(action, ''), success, changed,
+		       COALESCE(execution_status, ''), previous_state, expected_state, observed_state,
+		       COALESCE(verification_status, ''), COALESCE(command_summary, ''), COALESCE(adapter_response, '{}'::jsonb), duration_ms,
+		       COALESCE(error_code, ''), COALESCE(error_message, ''), COALESCE(started_at, '0001-01-01T00:00:00Z'::timestamptz),
+		       COALESCE(completed_at, '0001-01-01T00:00:00Z'::timestamptz), COALESCE(verified_at, '0001-01-01T00:00:00Z'::timestamptz), created_at
 		FROM enforcement_results
 		WHERE enforcement_request_id = NULLIF($1, '')::uuid
-		ORDER BY created_at DESC
+		ORDER BY attempt_number DESC, created_at DESC
 	`, strings.TrimSpace(requestID))
 	if err != nil {
 		return nil, err
@@ -795,7 +808,7 @@ func (r *PostgresRepository) FindActiveRequest(ctx context.Context, policyDecisi
 		WHERE policy_decision_id = NULLIF($1, '')::uuid
 		  AND requested_action = $2
 		  AND target_vlan = $3
-		  AND status IN ('pending', 'running')
+		  AND status IN ('pending', 'queued', 'running', 'verifying', 'retry_scheduled', 'succeeded', 'skipped')
 		ORDER BY requested_at DESC
 		LIMIT 1
 	`, strings.TrimSpace(policyDecisionID), strings.TrimSpace(action), targetVLAN)
@@ -809,12 +822,26 @@ func (r *PostgresRepository) FindActiveRequest(ctx context.Context, policyDecisi
 	return &item, nil
 }
 
-func (r *PostgresRepository) ClaimNextRequest(ctx context.Context, now time.Time) (*domain.Request, error) {
+func (r *PostgresRepository) ClaimNextRequest(ctx context.Context, now time.Time, staleBefore time.Time) (*domain.Request, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `
+		UPDATE enforcement_requests
+		SET status = 'retry_scheduled',
+		    attempt_count = attempt_count + 1,
+		    error_code = 'stale_running_recovered',
+		    error_message = 'stale running request recovered by worker',
+		    requested_at = $1,
+		    updated_at = $1
+		WHERE status IN ('running', 'verifying')
+		  AND started_at IS NOT NULL
+		  AND started_at < $2
+	`, now, staleBefore); err != nil {
+		return nil, err
+	}
 	row := tx.QueryRow(ctx, `
 		SELECT id, COALESCE(device_id::text, ''), COALESCE(policy_decision_id::text, ''), COALESCE(switch_id::text, ''), COALESCE(port_id::text, ''),
 		       requested_action, target_vlan, previous_vlan, requested_by, request_source, mode, status, attempt_count,
@@ -824,11 +851,12 @@ func (r *PostgresRepository) ClaimNextRequest(ctx context.Context, now time.Time
 		       COALESCE(current_switch_id::text, ''), COALESCE(current_if_index, 0), COALESCE(current_interface_name, ''), COALESCE(target_device_mac, ''),
 		       COALESCE(metadata, '{}'::jsonb), created_at, updated_at
 		FROM enforcement_requests
-		WHERE status = 'pending'
+		WHERE status IN ('pending', 'queued', 'retry_scheduled', 'rollback_pending')
+		  AND requested_at <= $1
 		ORDER BY requested_at ASC
 		FOR UPDATE SKIP LOCKED
 		LIMIT 1
-	`)
+	`, now)
 	item, err := scanRequest(row)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -839,11 +867,10 @@ func (r *PostgresRepository) ClaimNextRequest(ctx context.Context, now time.Time
 		}
 		return nil, err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE enforcement_requests SET status = 'running', started_at = $2, updated_at = $2 WHERE id = $1`, item.ID, now); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE enforcement_requests SET status = 'queued', updated_at = $2 WHERE id = $1`, item.ID, now); err != nil {
 		return nil, err
 	}
-	item.Status = domain.RequestStatusRunning
-	item.StartedAt = now
+	item.Status = domain.RequestStatusQueued
 	item.UpdatedAt = now
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
@@ -851,8 +878,18 @@ func (r *PostgresRepository) ClaimNextRequest(ctx context.Context, now time.Time
 	return &item, nil
 }
 
+func (r *PostgresRepository) MarkRequestQueued(ctx context.Context, id string, queuedAt time.Time) error {
+	_, err := r.pool.Exec(ctx, `UPDATE enforcement_requests SET status = 'queued', updated_at = $2 WHERE id = NULLIF($1, '')::uuid`, strings.TrimSpace(id), queuedAt)
+	return err
+}
+
 func (r *PostgresRepository) MarkRequestStarted(ctx context.Context, id string, adapter string, startedAt time.Time) error {
 	_, err := r.pool.Exec(ctx, `UPDATE enforcement_requests SET status = 'running', adapter = $2, started_at = $3, updated_at = $3 WHERE id = NULLIF($1, '')::uuid`, strings.TrimSpace(id), strings.TrimSpace(adapter), startedAt)
+	return err
+}
+
+func (r *PostgresRepository) MarkRequestVerifying(ctx context.Context, id string, verifyingAt time.Time) error {
+	_, err := r.pool.Exec(ctx, `UPDATE enforcement_requests SET status = 'verifying', updated_at = $2 WHERE id = NULLIF($1, '')::uuid`, strings.TrimSpace(id), verifyingAt)
 	return err
 }
 
@@ -871,18 +908,55 @@ func (r *PostgresRepository) MarkRequestCompleted(ctx context.Context, id, statu
 	return err
 }
 
-func (r *PostgresRepository) MarkRequestRetry(ctx context.Context, id, errorCode, errorMessage string, nextAttemptAt time.Time) error {
+func (r *PostgresRepository) MarkRequestRetry(ctx context.Context, id, status, errorCode, errorMessage string, nextAttemptAt time.Time) error {
+	if strings.TrimSpace(status) == "" {
+		status = domain.RequestStatusRetryScheduled
+	}
 	_, err := r.pool.Exec(ctx, `
 		UPDATE enforcement_requests
-		SET status = 'pending',
+		SET status = $2,
 		    attempt_count = attempt_count + 1,
-		    error_code = $2,
-		    error_message = $3,
-		    requested_at = $4,
-		    updated_at = $4
+		    error_code = $3,
+		    error_message = $4,
+		    requested_at = $5,
+		    updated_at = $5
 		WHERE id = NULLIF($1, '')::uuid
-	`, strings.TrimSpace(id), strings.TrimSpace(errorCode), strings.TrimSpace(errorMessage), nextAttemptAt)
+	`, strings.TrimSpace(id), strings.TrimSpace(status), strings.TrimSpace(errorCode), strings.TrimSpace(errorMessage), nextAttemptAt)
 	return err
+}
+
+func (r *PostgresRepository) CancelRequest(ctx context.Context, id, status, errorCode, errorMessage string, completedAt time.Time) error {
+	if strings.TrimSpace(status) == "" {
+		status = domain.RequestStatusCancelled
+	}
+	_, err := r.pool.Exec(ctx, `
+		UPDATE enforcement_requests
+		SET status = $2,
+		    error_code = $3,
+		    error_message = $4,
+		    completed_at = $5,
+		    updated_at = $5
+		WHERE id = NULLIF($1, '')::uuid
+	`, strings.TrimSpace(id), strings.TrimSpace(status), strings.TrimSpace(errorCode), strings.TrimSpace(errorMessage), completedAt)
+	return err
+}
+
+func (r *PostgresRepository) CancelSupersededRequests(ctx context.Context, deviceID, keepRequestID, reason string) (int, error) {
+	commandTag, err := r.pool.Exec(ctx, `
+		UPDATE enforcement_requests
+		SET status = 'cancelled',
+		    error_code = 'superseded_by_newer_decision',
+		    error_message = CASE WHEN BTRIM($3) <> '' THEN $3 ELSE 'superseded by newer decision' END,
+		    completed_at = NOW(),
+		    updated_at = NOW()
+		WHERE device_id = NULLIF($1, '')::uuid
+		  AND id <> NULLIF($2, '')::uuid
+		  AND status IN ('pending', 'queued', 'retry_scheduled')
+	`, strings.TrimSpace(deviceID), strings.TrimSpace(keepRequestID), strings.TrimSpace(reason))
+	if err != nil {
+		return 0, err
+	}
+	return int(commandTag.RowsAffected()), nil
 }
 
 func (r *PostgresRepository) UpdateRequestPolicyBinding(ctx context.Context, id, policyDecisionID string) error {
@@ -905,7 +979,13 @@ func (r *PostgresRepository) UpdatePolicyDecisionEnforcement(ctx context.Context
 	return err
 }
 
-func (r *PostgresRepository) UpdateDeviceEnforcementSnapshot(ctx context.Context, deviceID, action string, vlanID int, status, errorMessage string, observedAt time.Time) error {
+func (r *PostgresRepository) UpdateDeviceEnforcementSnapshot(ctx context.Context, deviceID, requestID, action string, vlanID int, status, errorMessage string, observedAt time.Time, verified bool) error {
+	quarantineStatus := ""
+	if action == domain.ActionAssignQuarantineVLAN && verified {
+		quarantineStatus = "quarantined"
+	} else if verified {
+		quarantineStatus = "released"
+	}
 	_, err := r.pool.Exec(ctx, `
 		UPDATE devices
 		SET last_enforcement_action = $2,
@@ -913,12 +993,41 @@ func (r *PostgresRepository) UpdateDeviceEnforcementSnapshot(ctx context.Context
 		    last_enforcement_status = $4,
 		    last_enforcement_at = $5,
 		    last_enforcement_error = $6,
-		    applied_enforcement_state = CASE WHEN $4 = 'succeeded' THEN $2 ELSE applied_enforcement_state END,
-		    applied_enforcement_vlan = CASE WHEN $4 = 'succeeded' THEN $3 ELSE applied_enforcement_vlan END,
+		    last_enforcement_request_id = NULLIF($7, '')::uuid,
+		    applied_enforcement_state = CASE WHEN $8 THEN $2 ELSE applied_enforcement_state END,
+		    applied_enforcement_vlan = CASE WHEN $8 THEN $3 ELSE applied_enforcement_vlan END,
+		    verified_vlan = CASE WHEN $8 THEN $3 ELSE verified_vlan END,
+		    quarantine_status = CASE WHEN $9 <> '' THEN $9 ELSE quarantine_status END,
 		    updated_at = NOW()
 		WHERE id = NULLIF($1, '')::uuid
-	`, strings.TrimSpace(deviceID), strings.TrimSpace(action), vlanID, strings.TrimSpace(status), observedAt, strings.TrimSpace(errorMessage))
+	`, strings.TrimSpace(deviceID), strings.TrimSpace(action), vlanID, strings.TrimSpace(status), observedAt, strings.TrimSpace(errorMessage), strings.TrimSpace(requestID), verified, quarantineStatus)
 	return err
+}
+
+func (r *PostgresRepository) WorkerStats(ctx context.Context) (domain.WorkerStats, error) {
+	var stats domain.WorkerStats
+	var oldestSeconds int64
+	var lastSuccess time.Time
+	row := r.pool.QueryRow(ctx, `
+		SELECT
+			COALESCE(SUM(CASE WHEN status IN ('pending', 'queued', 'retry_scheduled') THEN 1 ELSE 0 END), 0) AS queue_depth,
+			COALESCE(MAX(CASE WHEN status IN ('running', 'verifying') THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status IN ('running', 'verifying') THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status IN ('failed', 'verification_failed', 'rollback_failed') THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'retry_scheduled' THEN 1 ELSE 0 END), 0),
+			COALESCE(EXTRACT(EPOCH FROM (NOW() - MIN(requested_at)))::bigint, 0),
+			COALESCE(MAX(CASE WHEN status IN ('succeeded', 'rolled_back', 'skipped') THEN completed_at ELSE NULL END), '0001-01-01T00:00:00Z'::timestamptz)
+		FROM enforcement_requests
+		WHERE status IN ('pending', 'queued', 'retry_scheduled', 'running', 'verifying', 'failed', 'verification_failed', 'rollback_failed', 'succeeded', 'rolled_back', 'skipped')
+	`)
+	var runningFlag int
+	if err := row.Scan(&stats.QueueDepth, &runningFlag, &stats.RunningRequestCount, &stats.FailedRequestCount, &stats.RetryScheduledCount, &oldestSeconds, &lastSuccess); err != nil {
+		return domain.WorkerStats{}, err
+	}
+	stats.Running = runningFlag > 0 || stats.QueueDepth > 0
+	stats.OldestPendingAgeSec = oldestSeconds
+	stats.LastSuccessfulAt = lastSuccess
+	return stats, nil
 }
 
 func scanRequest(scanner interface{ Scan(dest ...any) error }) (domain.Request, error) {
@@ -940,7 +1049,7 @@ func scanResult(scanner interface{ Scan(dest ...any) error }) (domain.Result, er
 	var expected []byte
 	var observed []byte
 	var adapter []byte
-	if err := scanner.Scan(&item.ID, &item.EnforcementRequestID, &item.Success, &item.Changed, &prev, &expected, &observed, &item.VerificationStatus, &adapter, &item.DurationMS, &item.ErrorCode, &item.ErrorMessage, &item.CreatedAt); err != nil {
+	if err := scanner.Scan(&item.ID, &item.EnforcementRequestID, &item.AttemptNumber, &item.Adapter, &item.Transport, &item.Action, &item.Success, &item.Changed, &item.ExecutionStatus, &prev, &expected, &observed, &item.VerificationStatus, &item.CommandSummary, &adapter, &item.DurationMS, &item.ErrorCode, &item.ErrorMessage, &item.StartedAt, &item.CompletedAt, &item.VerifiedAt, &item.CreatedAt); err != nil {
 		return domain.Result{}, err
 	}
 	_ = json.Unmarshal(prev, &item.PreviousState)
