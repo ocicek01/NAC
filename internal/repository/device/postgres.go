@@ -723,7 +723,10 @@ func (r *PostgresRepository) Upsert(ctx context.Context, device domain.Device) (
 			END,
 			sophos_last_ip = COALESCE(EXCLUDED.sophos_last_ip, devices.sophos_last_ip),
 			sophos_last_seen_at = COALESCE(EXCLUDED.sophos_last_seen_at, devices.sophos_last_seen_at),
-			last_policy_decision = EXCLUDED.last_policy_decision,
+			last_policy_decision = CASE
+				WHEN EXCLUDED.last_policy_decision <> '' THEN EXCLUDED.last_policy_decision
+				ELSE devices.last_policy_decision
+			END,
 			last_policy_evaluated_at = COALESCE(EXCLUDED.last_policy_evaluated_at, devices.last_policy_evaluated_at),
 			current_switch_id = EXCLUDED.current_switch_id,
 			current_switch_name = EXCLUDED.current_switch_name,

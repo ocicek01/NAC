@@ -86,6 +86,53 @@ func TestRefreshPolicyStateAfterEnrichmentPersistsDecisionContext(t *testing.T) 
 	}
 }
 
+func TestEvaluatePolicyByIDPersistsActionAsLastPolicyDecision(t *testing.T) {
+	repo := &stubDeviceRepository{
+		byID: map[string]devicedomain.Device{
+			"dev-2": {
+				ID:                   "dev-2",
+				MACAddress:           "00:08:D1:04:E2:23",
+				CurrentSwitchID:      "sw-1",
+				CurrentSwitchName:    "sw-1",
+				CurrentInterfaceName: "Gig1/0/23",
+				CurrentSourceType:    "snmp",
+				PolicyAction:         "unknown",
+				PolicyReason:         "Default Unknown",
+				TrustLevel:           "low",
+			},
+		},
+		byMAC: map[string][]devicedomain.Device{
+			"00:08:D1:04:E2:23": {{
+				ID:                   "dev-2",
+				MACAddress:           "00:08:D1:04:E2:23",
+				CurrentSwitchID:      "sw-1",
+				CurrentSwitchName:    "sw-1",
+				CurrentInterfaceName: "Gig1/0/23",
+				CurrentSourceType:    "snmp",
+				PolicyAction:         "unknown",
+				PolicyReason:         "Default Unknown",
+				TrustLevel:           "low",
+			}},
+		},
+	}
+	policies := &capturingPolicyEvaluator{result: policyservice.EvaluationResult{Status: "restricted", Action: "unknown", Explanation: "Default Unknown", DecisionID: "pd-3", DecisionType: "restricted", PolicyName: "Default Unknown", DryRun: true, TrustScore: 35}}
+	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, policies, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, 0, false, false, 0, 0, 0, false, 0)
+
+	result, err := service.EvaluatePolicyByID(context.Background(), "dev-2")
+	if err != nil {
+		t.Fatalf("EvaluatePolicyByID returned error: %v", err)
+	}
+	if result.DecisionType != "restricted" {
+		t.Fatalf("expected decision_type restricted, got %q", result.DecisionType)
+	}
+	if len(repo.policyEvalCalls) != 1 {
+		t.Fatalf("expected one persisted policy evaluation update, got %d", len(repo.policyEvalCalls))
+	}
+	if repo.policyEvalCalls[0].LastPolicyDecision != "unknown" {
+		t.Fatalf("expected last policy decision to persist action fallback, got %q", repo.policyEvalCalls[0].LastPolicyDecision)
+	}
+}
+
 func (s *stubDeviceRepository) FindByID(ctx context.Context, id string) (*devicedomain.Device, error) {
 	if item, ok := s.byID[id]; ok {
 		copyItem := item

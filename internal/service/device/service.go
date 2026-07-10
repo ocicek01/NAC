@@ -1829,7 +1829,14 @@ func (s *Service) EvaluatePolicyByID(ctx context.Context, deviceID string) (poli
 	} else {
 		trustLevel = "critical"
 	}
-	if err := s.repository.UpdatePolicyEvaluationByID(ctx, device.ID, result.Status, result.Action, result.Explanation, trustLevel, result.DecisionType, time.Now().UTC()); err != nil {
+	lastPolicyDecision := strings.TrimSpace(result.Action)
+	if lastPolicyDecision == "" {
+		lastPolicyDecision = strings.TrimSpace(result.DecisionType)
+	}
+	if lastPolicyDecision == "" {
+		lastPolicyDecision = strings.TrimSpace(result.PolicyName)
+	}
+	if err := s.repository.UpdatePolicyEvaluationByID(ctx, device.ID, result.Status, result.Action, result.Explanation, trustLevel, lastPolicyDecision, time.Now().UTC()); err != nil {
 		return policyservice.EvaluationResult{}, err
 	}
 	if s.audit != nil {
