@@ -964,6 +964,8 @@
         let activeDiscoveryJob = null;
         let pendingVlanAction = null;
         let selectedPortDetailSyncHandle = null;
+        let selectedPortRapidRetryHandle = null;
+        let selectedPortRapidRetryToken = 0;
         const endpointPendingLabels = {
             user: 'RADIUS verisi bekleniyor',
             ip: 'IP verisi yok',
@@ -1440,6 +1442,72 @@
             }
         }
 
+        function selectedPortNeedsLiveRefresh(portId) {
+            const data = portMap[String(portId)];
+            if (!data) {
+                return false;
+            }
+
+            const mac = String(data.mac ?? '').trim();
+            const macCount = Number(data.macCount ?? 0);
+            return (mac === '' || mac === '-') && macCount <= 0;
+        }
+
+        function clearSelectedPortRapidRefresh() {
+            selectedPortRapidRetryToken += 1;
+            if (selectedPortRapidRetryHandle !== null) {
+                window.clearTimeout(selectedPortRapidRetryHandle);
+                selectedPortRapidRetryHandle = null;
+            }
+        }
+
+        function scheduleSelectedPortRapidRefresh(portId) {
+            clearSelectedPortRapidRefresh();
+
+            if (!portId || !selectedPortNeedsLiveRefresh(portId)) {
+                return;
+            }
+
+            const retryToken = selectedPortRapidRetryToken;
+            const delays = [800, 1600, 3200, 5000];
+
+            const run = function (index) {
+                if (index >= delays.length) {
+                    return;
+                }
+                if (String(currentSelectedPortId) !== String(portId)) {
+                    return;
+                }
+                if (!selectedPortNeedsLiveRefresh(portId)) {
+                    return;
+                }
+
+                selectedPortRapidRetryHandle = window.setTimeout(async function () {
+                    selectedPortRapidRetryHandle = null;
+
+                    if (retryToken !== selectedPortRapidRetryToken) {
+                        return;
+                    }
+                    if (String(currentSelectedPortId) !== String(portId)) {
+                        return;
+                    }
+
+                    try {
+                        await refreshPortDetail(portId);
+                    } catch (error) {
+                        console.error(error);
+                    }
+
+                    if (retryToken !== selectedPortRapidRetryToken) {
+                        return;
+                    }
+
+                    run(index + 1);
+                }, delays[index]);
+            };
+
+            run(0);
+        }
         function startSelectedPortDetailSync() {
             if (selectedPortDetailSyncHandle !== null) {
                 return;
@@ -1809,12 +1877,14 @@
 
             syncPortActionForms(data);
             syncSelectedPortQuery(portId);
+            scheduleSelectedPortRapidRefresh(portId);
         }
 
         document.querySelectorAll('.port-tile, .uplink-port').forEach(function (tile) {
             tile.addEventListener('click', function () {
                 updateSelectedPort(tile.dataset.portId);
                 refreshPortDetail(tile.dataset.portId).catch(function () {});
+                scheduleSelectedPortRapidRefresh(tile.dataset.portId);
                 hideContextMenu();
             });
 
@@ -1962,6 +2032,7 @@
         if (portMap[String(currentSelectedPortId)]) {
             syncPortActionForms(portMap[String(currentSelectedPortId)]);
             refreshPortDetail(currentSelectedPortId).catch(function () {});
+            scheduleSelectedPortRapidRefresh(currentSelectedPortId);
         }
         loadPortStatuses().catch(function (error) {
             console.error(error);
