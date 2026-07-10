@@ -1116,7 +1116,7 @@
             let payload = {};
 
             if (false) {
-                const entered = window.prompt('Tasınacak VLAN ID degerini girin (1-4094):', String(selectedContextPort.vlan || '1'));
+                const entered = window.prompt('Tasinacak VLAN ID degerini girin (1-4094):', String(selectedContextPort.vlan || '1'));
                 if (entered === null) {
                     return;
                 }
@@ -1339,7 +1339,35 @@
             if (!portMap[key]) {
                 return;
             }
-            portMap[key] = Object.assign({}, portMap[key], patch || {});
+            const current = portMap[key];
+            const next = Object.assign({}, current, patch || {});
+            const preferCurrentWhenPlaceholder = [
+                'user',
+                'mac',
+                'ip',
+                'hostname',
+                'deviceType',
+                'policyText',
+                'role',
+                'identitySource',
+                'enforcementMethod',
+            ];
+
+            preferCurrentWhenPlaceholder.forEach(function (field) {
+                const incoming = String(next[field] ?? '').trim();
+                const existing = String(current[field] ?? '').trim();
+                if ((incoming === '' || incoming === '-') && existing !== '' && existing !== '-') {
+                    next[field] = current[field];
+                }
+            });
+
+            const incomingMacCount = Number(next.macCount ?? 0);
+            const existingMacCount = Number(current.macCount ?? 0);
+            if (Number.isFinite(existingMacCount) && existingMacCount > incomingMacCount) {
+                next.macCount = existingMacCount;
+            }
+
+            portMap[key] = next;
         }
 
         function applyPortVlanChange(portId, vlanId) {
