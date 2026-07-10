@@ -383,6 +383,30 @@ func (s *Service) LivePortLookup(ctx context.Context, switchID string, ifIndex i
 	live.MACCount = len(live.MACAddresses)
 	return live, nil
 }
+func (s *Service) RefreshPortSnapshot(ctx context.Context, switchID string, ifIndex int) (*domain.LivePortLookup, error) {
+	switchID = strings.TrimSpace(switchID)
+	if switchID == "" {
+		return nil, fmt.Errorf("switch id is required")
+	}
+	if ifIndex <= 0 {
+		return nil, fmt.Errorf("if_index must be greater than zero")
+	}
+	if s.ports == nil {
+		return nil, fmt.Errorf("switch port repository is not configured")
+	}
+
+	live, err := s.LivePortLookup(ctx, switchID, ifIndex)
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = s.ports.UpdateFDBSnapshot(ctx, switchID, ifIndex, live.InterfaceName, live.InterfaceDescription, live.MACAddresses, live.ObservedAt)
+	if err != nil {
+		return nil, err
+	}
+
+	return live, nil
+}
 func (s *Service) LiveDetail(ctx context.Context, id string) (*domain.LiveDetail, error) {
 	asset, err := s.repository.FindByID(ctx, strings.TrimSpace(id))
 	if err != nil {

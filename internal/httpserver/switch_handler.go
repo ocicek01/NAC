@@ -28,6 +28,7 @@ type switchService interface {
 	ListPortsBySwitch(ctx context.Context, switchID string) ([]switchport.Port, error)
 	PortSummaryBySwitch(ctx context.Context, switchID string) (any, error)
 	LivePortLookup(ctx context.Context, switchID string, ifIndex int) (*switchasset.LivePortLookup, error)
+	RefreshPortSnapshot(ctx context.Context, switchID string, ifIndex int) (*switchasset.LivePortLookup, error)
 }
 
 type portEndpointService interface {
@@ -269,6 +270,27 @@ func registerSwitchRoutes(mux *http.ServeMux, service switchService, portEndpoin
 	mux.HandleFunc("/api/v1/switches/", func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/v1/switches/")
 		switch {
+		case strings.Contains(path, "/ports/") && strings.HasSuffix(path, "/refresh") && r.Method == http.MethodPost:
+			trimmed := strings.Trim(strings.TrimSuffix(path, "/refresh"), "/")
+			parts := strings.Split(trimmed, "/ports/")
+			if len(parts) != 2 {
+				http.Error(w, "invalid switch port path", http.StatusBadRequest)
+				return
+			}
+			id := strings.TrimSpace(parts[0])
+			ifIndex, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+			if err != nil || ifIndex <= 0 {
+				http.Error(w, "valid if_index is required", http.StatusBadRequest)
+				return
+			}
+
+			go func() {
+				_, _ = service.RefreshPortSnapshot(context.Background(), id, ifIndex)
+			}()
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "queued", "switch_id": id, "if_index": ifIndex})
 		case strings.Contains(path, "/ports/") && strings.HasSuffix(path, "/live") && r.Method == http.MethodGet:
 			trimmed := strings.Trim(strings.TrimSuffix(path, "/live"), "/")
 			parts := strings.Split(trimmed, "/ports/")

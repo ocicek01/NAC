@@ -415,3 +415,136 @@ func (r *PostgresRepository) UpdateStatus(ctx context.Context, switchID string, 
 	}
 	return &port, nil
 }
+
+func (r *PostgresRepository) UpdateFDBSnapshot(ctx context.Context, switchID string, ifIndex int, interfaceName, interfaceDescription string, macAddresses []string, observedAt time.Time) (*domain.Port, error) {
+	if observedAt.IsZero() {
+		observedAt = time.Now().UTC()
+	}
+	macAddresses = uniqueNormalizedMACs(macAddresses)
+	macJSON, err := json.Marshal(macAddresses)
+	if err != nil {
+		return nil, err
+	}
+
+	row := r.pool.QueryRow(ctx, `
+		WITH updated AS (
+			UPDATE switch_ports
+			SET if_index = CASE WHEN if_index <= 0 THEN $2 ELSE if_index END,
+				port_index = CASE WHEN port_index <= 0 THEN $2 ELSE port_index END,
+				interface_name = CASE WHEN $3 <> '' THEN $3 ELSE interface_name END,
+				interface_description = CASE WHEN $4 <> '' THEN $4 ELSE interface_description END,
+				mac_count = $5,
+				mac_addresses = $6::jsonb,
+				last_discovered_at = $7,
+				updated_at = $7
+			WHERE switch_id = $1 AND (if_index = $2 OR port_index = $2)
+			RETURNING
+				id, switch_id, if_index, port_index, interface_name, interface_alias,
+				interface_description, port_label, interface_type, admin_status, oper_status,
+				status, port_mode, is_physical, is_uplink, is_trunk, trunk_source, enforcement_protected, vlan_id,
+				native_vlan, allowed_vlans, voice_vlan, mac_count, mac_addresses, speed_bps,
+				speed_label, duplex, poe_enabled, COALESCE(poe_power_watts::text, '0'),
+				neighbor_protocol, COALESCE(neighbor_switch_id::text, ''), neighbor_switch_name,
+				neighbor_port_name, neighbor_platform, neighbor_description, neighbor_data,
+				metadata, COALESCE(last_changed_at, '0001-01-01T00:00:00Z'::timestamptz),
+				last_discovered_at, created_at, updated_at
+		), inserted AS (
+			INSERT INTO switch_ports (
+				id, switch_id, if_index, port_index, interface_name, interface_description, mac_count, mac_addresses,
+				status, last_discovered_at, created_at, updated_at
+			)
+			SELECT gen_random_uuid(), $1, $2, $2, $3, $4, $5, $6::jsonb, 'unknown', $7, $7, $7
+			WHERE NOT EXISTS (SELECT 1 FROM updated)
+			RETURNING
+				id, switch_id, if_index, port_index, interface_name, interface_alias,
+				interface_description, port_label, interface_type, admin_status, oper_status,
+				status, port_mode, is_physical, is_uplink, is_trunk, trunk_source, enforcement_protected, vlan_id,
+				native_vlan, allowed_vlans, voice_vlan, mac_count, mac_addresses, speed_bps,
+				speed_label, duplex, poe_enabled, COALESCE(poe_power_watts::text, '0'),
+				neighbor_protocol, COALESCE(neighbor_switch_id::text, ''), neighbor_switch_name,
+				neighbor_port_name, neighbor_platform, neighbor_description, neighbor_data,
+				metadata, COALESCE(last_changed_at, '0001-01-01T00:00:00Z'::timestamptz),
+				last_discovered_at, created_at, updated_at
+		)
+		SELECT * FROM updated
+		UNION ALL
+		SELECT * FROM inserted
+		LIMIT 1
+	`, strings.TrimSpace(switchID), ifIndex, strings.TrimSpace(interfaceName), strings.TrimSpace(interfaceDescription), len(macAddresses), string(macJSON), observedAt)
+
+	var port domain.Port
+	var returnedMacJSON []byte
+	var neighborJSON []byte
+	var metadataJSON []byte
+	var lastChanged time.Time
+	if err := row.Scan(
+		&port.ID,
+		&port.SwitchID,
+		&port.IfIndex,
+		&port.PortIndex,
+		&port.InterfaceName,
+		&port.InterfaceAlias,
+		&port.InterfaceDescription,
+		&port.PortLabel,
+		&port.InterfaceType,
+		&port.AdminStatus,
+		&port.OperStatus,
+		&port.Status,
+		&port.PortMode,
+		&port.IsPhysical,
+		&port.IsUplink,
+		&port.IsTrunk,
+		&port.TrunkSource,
+		&port.VLANID,
+		&port.NativeVLAN,
+		&port.AllowedVLANs,
+		&port.VoiceVLAN,
+		&port.MACCount,
+		&returnedMacJSON,
+		&port.SpeedBPS,
+		&port.SpeedLabel,
+		&port.Duplex,
+		&port.PoEEnabled,
+		&port.PoEPowerWatts,
+		&port.NeighborProtocol,
+		&port.NeighborSwitchID,
+		&port.NeighborSwitchName,
+		&port.NeighborPortName,
+		&port.NeighborPlatform,
+		&port.NeighborDescription,
+		&neighborJSON,
+		&metadataJSON,
+		&lastChanged,
+		&port.LastDiscoveredAt,
+		&port.CreatedAt,
+		&port.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+	_ = json.Unmarshal(returnedMacJSON, &port.MACAddresses)
+	_ = json.Unmarshal(neighborJSON, &port.NeighborData)
+	_ = json.Unmarshal(metadataJSON, &port.Metadata)
+	if !lastChanged.IsZero() {
+		port.LastChangedAt = lastChanged
+	}
+	return &port, nil
+}
+func uniqueNormalizedMACs(values []string) []string {
+	if len(values) == 0 {
+		return []string{}
+	}
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		candidate := strings.TrimSpace(strings.ToUpper(value))
+		if candidate == "" {
+			continue
+		}
+		if _, ok := seen[candidate]; ok {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		result = append(result, candidate)
+	}
+	return result
+}

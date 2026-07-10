@@ -159,6 +159,10 @@ class NacApiClient
         return $this->get("/api/v1/switches/{$id}/ports/summary");
     }
 
+    public function refreshSwitchPortSnapshot(string $switchId, int $ifIndex): array
+    {
+        return $this->post("/api/v1/switches/{$switchId}/ports/{$ifIndex}/refresh", []);
+    }
     public function switchPortLive(string $switchId, int $ifIndex): array
     {
         return $this->optionalGet("/api/v1/switches/{$switchId}/ports/{$ifIndex}/live");

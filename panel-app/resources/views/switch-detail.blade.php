@@ -980,6 +980,7 @@
         const portStatusUrl = switchId ? '/api/switches/' + switchId + '/ports/status' : null;
         const portDetailsUrl = switchId ? '/api/switches/' + switchId + '/ports' : null;
         const portEventsUrl = '/api/events/ports';
+        const switchPortRefreshUrlTemplate = '/api/switch-ports/__PORT__/refresh-live';
         const portAllowForm = document.getElementById('port-allow-form');
         const portGuestForm = document.getElementById('port-guest-form');
         const portBlockForm = document.getElementById('port-block-form');
@@ -1757,6 +1758,32 @@
             });
         }
 
+        function requestPortSnapshotRefresh(portId) {
+            if (!portId) {
+                return;
+            }
+
+            fetch(switchPortRefreshUrlTemplate.replace('__PORT__', encodeURIComponent(String(portId))), {
+                method: 'POST',
+                headers: {
+                    'Accept': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
+            }).then(function () {
+                window.setTimeout(function () {
+                    refreshPortDetail(portId).catch(function (error) {
+                        console.error(error);
+                    });
+                }, 1500);
+                window.setTimeout(function () {
+                    refreshPortDetail(portId).catch(function (error) {
+                        console.error(error);
+                    });
+                }, 4000);
+            }).catch(function (error) {
+                console.error(error);
+            });
+        }
         function openSubmenu(name, trigger) {
             const submenu = document.getElementById('portSubmenu-' + name);
             if (!submenu) {
@@ -1814,6 +1841,7 @@
             tile.addEventListener('click', function () {
                 updateSelectedPort(tile.dataset.portId);
                 refreshPortDetail(tile.dataset.portId).catch(function () {});
+                requestPortSnapshotRefresh(tile.dataset.portId);
                 hideContextMenu();
             });
 
@@ -1961,6 +1989,7 @@
         if (portMap[String(currentSelectedPortId)]) {
             syncPortActionForms(portMap[String(currentSelectedPortId)]);
             refreshPortDetail(currentSelectedPortId).catch(function () {});
+            requestPortSnapshotRefresh(currentSelectedPortId);
         }
         loadPortStatuses().catch(function (error) {
             console.error(error);

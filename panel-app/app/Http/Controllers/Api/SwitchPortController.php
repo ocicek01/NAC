@@ -28,10 +28,61 @@ class SwitchPortController extends Controller
         $port->loadMissing(['switch', 'currentLocation.endpoint']);
 
         return response()->json([
-            'data' => $this->switchStatsService->portDetail($port, true),
+            'data' => $this->switchStatsService->portDetail($port),
         ]);
     }
 
+    public function refreshLive(Request $request, SwitchPort $port): JsonResponse
+    {
+        $port->loadMissing('switch');
+        if (! $port->switch) {
+            return response()->json([
+                'message' => 'Port switch kaydi bulunamadi.',
+            ], 422);
+        }
+
+        $resolved = $this->nacApiClient->resolveSwitch($port->switch->hostname, $port->switch->ip_address);
+        if (! is_array($resolved) || blank($resolved['id'] ?? null)) {
+            return response()->json([
+                'message' => 'Go switch kaydi bulunamadi.',
+            ], 422);
+        }
+
+        $lookupIfIndex = (int) ($port->if_index ?: $port->port_index ?: 0);
+        if ($lookupIfIndex <= 0 && preg_match('/(\d+)\s*$/', (string) $port->port_name, $matches) === 1) {
+            $lookupIfIndex = (int) ($matches[1] ?? 0);
+        }
+        if ($lookupIfIndex <= 0) {
+            return response()->json([
+                'message' => 'Port lookup index bulunamadi.',
+            ], 422);
+        }
+
+        $result = $this->nacApiClient->refreshSwitchPortSnapshot((string) $resolved['id'], $lookupIfIndex);
+
+        $this->auditLogService->log('switch_port_live_refresh_requested', 'switch_port', $port->id, array_merge(
+            $this->auditLogService->contextFromRequest($request),
+            [
+                'switch_id' => $port->switch_id,
+                'switch_port_id' => $port->id,
+                'new_value' => [
+                    'go_switch_id' => $resolved['id'] ?? null,
+                    'lookup_if_index' => $lookupIfIndex,
+                    'status' => $result['status'] ?? 'queued',
+                ],
+            ]
+        ));
+
+        return response()->json([
+            'message' => 'Canli port yenilemesi kuyruga alindi.',
+            'data' => [
+                'switch_id' => $port->switch_id,
+                'switch_port_id' => $port->id,
+                'lookup_if_index' => $lookupIfIndex,
+                'status' => $result['status'] ?? 'queued',
+            ],
+        ], 202);
+    }
     public function updateNacMode(Request $request, SwitchPort $port): JsonResponse
     {
         $validated = Validator::make($request->all(), [

@@ -23,6 +23,7 @@ Route::get('/switches/{switch}/ports/status', [SwitchController::class, 'portsSt
 Route::get('/discovery-jobs/{job}', [DiscoveryJobController::class, 'show']);
 
 Route::get('/switch-ports/{port}', [SwitchPortController::class, 'show']);
+Route::post('/switch-ports/{port}/refresh-live', [SwitchPortController::class, 'refreshLive']);
 Route::get('/switch-ports/{port}/lldp', [SwitchPortController::class, 'lldp']);
 Route::post('/switch-ports/{port}/rediscover', [SwitchPortController::class, 'rediscover']);
 Route::put('/switch-ports/{port}/nac-mode', [SwitchPortController::class, 'updateNacMode']);
