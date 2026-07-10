@@ -629,6 +629,7 @@ func (s *Service) ObserveAgentlessEvent(ctx context.Context, input domain.Agentl
 	if err != nil {
 		return domain.Device{}, err
 	}
+	stored = s.refreshPolicyState(ctx, stored)
 	s.enqueueEnrichment(stored.MACAddress)
 
 	_, err = s.repository.AddObservation(ctx, domain.Observation{
@@ -933,6 +934,7 @@ func (s *Service) enrichDeviceMetadata(ctx context.Context, macAddress string) (
 	if err != nil {
 		return "failed", err
 	}
+	updated = s.refreshPolicyState(ctx, updated)
 	if s.audit != nil {
 		action := "device_enrichment_missing"
 		statusValue := "warning"
@@ -1289,6 +1291,7 @@ func (s *Service) UpsertFromObservation(ctx context.Context, event dhcpevent.Eve
 	if err != nil {
 		return err
 	}
+	out = s.refreshPolicyState(ctx, out)
 	s.enqueueEnrichment(out.MACAddress)
 
 	if s.enforcement != nil {
@@ -1375,6 +1378,7 @@ func (s *Service) UpsertFromRadius(ctx context.Context, input RadiusInventoryInp
 	if err != nil {
 		return err
 	}
+	out = s.refreshPolicyState(ctx, out)
 	s.enqueueEnrichment(out.MACAddress)
 
 	if s.enforcement != nil {
@@ -1754,6 +1758,25 @@ func defaultString(value, fallback string) string {
 		return fallback
 	}
 	return strings.TrimSpace(value)
+}
+
+func (s *Service) refreshPolicyState(ctx context.Context, device domain.Device) domain.Device {
+	if s == nil || s.repository == nil || s.policies == nil || strings.TrimSpace(device.ID) == "" {
+		return device
+	}
+	if _, err := s.EvaluatePolicyByID(ctx, device.ID); err != nil {
+		s.logError("policy reevaluation after device persist failed", "device_id", device.ID, "mac_address", device.MACAddress, "error", err)
+		return device
+	}
+	refreshed, err := s.repository.FindByID(ctx, device.ID)
+	if err != nil {
+		s.logError("device reload after policy reevaluation failed", "device_id", device.ID, "mac_address", device.MACAddress, "error", err)
+		return device
+	}
+	if refreshed == nil {
+		return device
+	}
+	return *refreshed
 }
 
 func (s *Service) FindByID(ctx context.Context, id string) (*domain.Device, error) {

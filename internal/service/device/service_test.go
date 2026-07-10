@@ -10,6 +10,7 @@ import (
 	devicedomain "nac/internal/domain/device"
 	dhcpeventdomain "nac/internal/domain/dhcpevent"
 	macipbindingdomain "nac/internal/domain/macipbinding"
+	policydomain "nac/internal/domain/policy"
 	portendpointdomain "nac/internal/domain/portendpoint"
 	sessiondomain "nac/internal/domain/session"
 	switchportdomain "nac/internal/domain/switchport"
@@ -428,15 +429,26 @@ type stubDeviceRepository struct {
 	byMAC           map[string][]devicedomain.Device
 	bySwitch        []devicedomain.Device
 	byPort          []devicedomain.Device
+	byID            map[string]devicedomain.Device
 	listLimit       int
 	listOffset      int
 	listCalls       int
 	backfillCalls   int
 	lastEnrichment  devicedomain.EnrichmentUpdate
 	statusByIDCalls []statusByIDCall
+	policyEvalCalls []policyEvalCall
+	lastObservation devicedomain.Observation
 }
 
 func (s *stubDeviceRepository) Upsert(ctx context.Context, device devicedomain.Device) (devicedomain.Device, error) {
+	if s.byID == nil {
+		s.byID = map[string]devicedomain.Device{}
+	}
+	s.byID[device.ID] = device
+	if s.byMAC == nil {
+		s.byMAC = map[string][]devicedomain.Device{}
+	}
+	s.byMAC[device.MACAddress] = []devicedomain.Device{device}
 	return device, nil
 }
 func (s *stubDeviceRepository) List(ctx context.Context, limit, offset int) ([]devicedomain.Device, error) {
@@ -471,10 +483,31 @@ func (s *stubDeviceRepository) AddIdentitySnapshot(ctx context.Context, snapshot
 	return snapshot, nil
 }
 func (s *stubDeviceRepository) AddObservation(ctx context.Context, observation devicedomain.Observation) (devicedomain.Observation, error) {
+	s.lastObservation = observation
 	return observation, nil
 }
 func (s *stubDeviceRepository) UpdateEnrichment(ctx context.Context, update devicedomain.EnrichmentUpdate) (devicedomain.Device, error) {
 	s.lastEnrichment = update
+	if items, ok := s.byMAC[update.MACAddress]; ok && len(items) > 0 {
+		item := items[0]
+		item.Status = update.Status
+		item.PolicyAction = update.PolicyAction
+		item.PolicyReason = update.PolicyReason
+		item.TrustLevel = update.TrustLevel
+		item.EnrichmentStatus = update.EnrichmentStatus
+		item.EnrichmentSource = update.EnrichmentSource
+		item.OwnerUsername = update.OwnerUsername
+		item.OwnerDepartment = update.OwnerDepartment
+		item.OwnerRole = update.OwnerRole
+		item.DefaultVLANID = update.DefaultVLANID
+		items[0] = item
+		s.byMAC[update.MACAddress] = items
+		if s.byID == nil {
+			s.byID = map[string]devicedomain.Device{}
+		}
+		s.byID[item.ID] = item
+		return item, nil
+	}
 	return devicedomain.Device{ID: "updated", MACAddress: update.MACAddress, CurrentSwitchID: "sw-1"}, nil
 }
 func (s *stubDeviceRepository) UpdateEnrichmentStatusByID(ctx context.Context, deviceID, source, status, enrichmentError string, enrichedAt time.Time) error {
@@ -496,6 +529,15 @@ type statusByIDCall struct {
 	Source          string
 	Status          string
 	EnrichmentError string
+}
+
+type policyEvalCall struct {
+	DeviceID           string
+	Status             string
+	PolicyAction       string
+	PolicyReason       string
+	TrustLevel         string
+	LastPolicyDecision string
 }
 
 type stubSwitchPortResolver struct {
@@ -593,4 +635,8 @@ func (s stubPolicyEvaluator) Evaluate(ctx context.Context, input policyservice.E
 
 func (s stubPolicyEvaluator) EnforcementEnabled() bool {
 	return false
+}
+
+func (s stubPolicyEvaluator) ListDecisionsByDevice(ctx context.Context, deviceID string, limit, offset int) ([]policydomain.Decision, error) {
+	return nil, nil
 }
