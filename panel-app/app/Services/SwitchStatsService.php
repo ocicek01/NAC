@@ -13,6 +13,7 @@ class SwitchStatsService
 {
     protected array $goSwitchIdCache = [];
     protected int $nacCacheTtlSeconds = 10;
+    protected int $webSwitchDetailCacheTtlSeconds = 5;
 
     public function __construct(
         protected ?NacApiClient $nacApiClient = null,
@@ -49,8 +50,15 @@ class SwitchStatsService
         ];
     }
 
-    public function detail(NetworkSwitch $switch): array
+    public function detail(NetworkSwitch $switch, bool $useCache = false): array
     {
+        if ($useCache) {
+            return Cache::remember(
+                sprintf('nac:web-switch-detail:%s:%s', $switch->id, (string) ($switch->updated_at?->timestamp ?? 0)),
+                now()->addSeconds($this->webSwitchDetailCacheTtlSeconds),
+                fn () => $this->detail($switch)
+            );
+        }
         $ports = $switch->ports;
         $topologyLinks = [];
         $goPorts = [];
@@ -75,6 +83,7 @@ class SwitchStatsService
         $supportsPoe = $poeBudget > 0;
         $panelProfile = $this->panelProfile($switch);
         $panelLayout = $this->buildPanelLayout($switch, $portPayload);
+        $events = $this->eventEntries($switch);
 
         return [
             'switch' => [
@@ -119,7 +128,7 @@ class SwitchStatsService
                     ['label' => 'Kullanilabilir', 'value' => max(0, $poeBudget - round($usedPoe)), 'color' => '#cbd5e1'],
                 ],
             ],
-            'recent_events' => $this->eventEntries($switch),
+            'recent_events' => $events,
             'view' => [
                 'id' => $switch->id,
                 'hostname' => $switch->hostname,
@@ -162,7 +171,7 @@ class SwitchStatsService
                 'panelColumnCount' => $panelLayout['column_count'],
                 'panelProfile' => $panelProfile,
                 'selectedPort' => $selectedPort['id'] ?? null,
-                'events' => $this->eventEntries($switch),
+                'events' => $events,
                 'traffic' => $this->emptyTrafficSeries(),
                 'portStatusSegments' => $portStatusSegments,
                 'poeSegments' => [

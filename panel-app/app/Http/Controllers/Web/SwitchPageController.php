@@ -143,7 +143,7 @@ class SwitchPageController extends Controller
             ->with(['zone', 'ports.currentLocation.endpoint'])
             ->firstOrFail();
 
-        $detail = $this->switchStatsService->detail($switchModel);
+        $detail = $this->switchStatsService->detail($switchModel, true);
 
         return view('switch-detail', [
             'switchData' => $detail['view'],
@@ -152,3 +152,4 @@ class SwitchPageController extends Controller
         ]);
     }
 }
+
