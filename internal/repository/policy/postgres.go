@@ -371,6 +371,12 @@ func scanDecision(scanner interface{ Scan(dest ...any) error }) (domain.Decision
 		&item.Explanation,
 		&item.DryRun,
 		&item.EnforcementStatus,
+		&item.EnforcementRequested,
+		&item.EnforcementRequestID,
+		&item.EnforcementStartedAt,
+		&item.EnforcementCompletedAt,
+		&item.EnforcementError,
+		&item.EnforcedAt,
 		&item.EvaluationDurationMS,
 		&item.CreatedAt,
 	)
