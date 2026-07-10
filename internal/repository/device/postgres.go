@@ -67,6 +67,83 @@ var deviceSelectColumns = `
 		COALESCE(sophos_last_seen_at, '0001-01-01T00:00:00Z'::timestamptz),
 		COALESCE(last_policy_decision, ''),
 		COALESCE(last_policy_evaluated_at, '0001-01-01T00:00:00Z'::timestamptz),
+		COALESCE((
+			SELECT pd.id::text
+			FROM policy_decisions pd
+			WHERE pd.device_id = devices.id
+			ORDER BY pd.created_at DESC
+			LIMIT 1
+		), ''),
+		COALESCE((
+			SELECT pd.policy_id::text
+			FROM policy_decisions pd
+			WHERE pd.device_id = devices.id
+			ORDER BY pd.created_at DESC
+			LIMIT 1
+		), ''),
+		COALESCE((
+			SELECT pd.policy_name
+			FROM policy_decisions pd
+			WHERE pd.device_id = devices.id
+			ORDER BY pd.created_at DESC
+			LIMIT 1
+		), ''),
+		COALESCE((
+			SELECT pd.decision_type
+			FROM policy_decisions pd
+			WHERE pd.device_id = devices.id
+			ORDER BY pd.created_at DESC
+			LIMIT 1
+		), ''),
+		COALESCE((
+			SELECT pd.target_vlan
+			FROM policy_decisions pd
+			WHERE pd.device_id = devices.id
+			ORDER BY pd.created_at DESC
+			LIMIT 1
+		), 0),
+		COALESCE((
+			SELECT pd.enforcement_action
+			FROM policy_decisions pd
+			WHERE pd.device_id = devices.id
+			ORDER BY pd.created_at DESC
+			LIMIT 1
+		), ''),
+		COALESCE((
+			SELECT pd.trust_score
+			FROM policy_decisions pd
+			WHERE pd.device_id = devices.id
+			ORDER BY pd.created_at DESC
+			LIMIT 1
+		), 0),
+		COALESCE((
+			SELECT pd.dry_run
+			FROM policy_decisions pd
+			WHERE pd.device_id = devices.id
+			ORDER BY pd.created_at DESC
+			LIMIT 1
+		), true),
+		COALESCE((
+			SELECT pd.reason_codes
+			FROM policy_decisions pd
+			WHERE pd.device_id = devices.id
+			ORDER BY pd.created_at DESC
+			LIMIT 1
+		), '[]'::jsonb),
+		COALESCE((
+			SELECT pd.explanation
+			FROM policy_decisions pd
+			WHERE pd.device_id = devices.id
+			ORDER BY pd.created_at DESC
+			LIMIT 1
+		), ''),
+		COALESCE((
+			SELECT pd.created_at
+			FROM policy_decisions pd
+			WHERE pd.device_id = devices.id
+			ORDER BY pd.created_at DESC
+			LIMIT 1
+		), '0001-01-01T00:00:00Z'::timestamptz),
 		COALESCE(current_switch_id::text, ''),
 		COALESCE(current_switch_name, ''),
 		COALESCE(current_management_ip::text, ''),
@@ -309,6 +386,83 @@ var deviceListColumns = `
 		COALESCE(sophos_last_seen_at, '0001-01-01T00:00:00Z'::timestamptz),
 		COALESCE(last_policy_decision, ''),
 		COALESCE(last_policy_evaluated_at, '0001-01-01T00:00:00Z'::timestamptz),
+		COALESCE((
+			SELECT pd.id::text
+			FROM policy_decisions pd
+			WHERE pd.device_id = devices.id
+			ORDER BY pd.created_at DESC
+			LIMIT 1
+		), ''),
+		COALESCE((
+			SELECT pd.policy_id::text
+			FROM policy_decisions pd
+			WHERE pd.device_id = devices.id
+			ORDER BY pd.created_at DESC
+			LIMIT 1
+		), ''),
+		COALESCE((
+			SELECT pd.policy_name
+			FROM policy_decisions pd
+			WHERE pd.device_id = devices.id
+			ORDER BY pd.created_at DESC
+			LIMIT 1
+		), ''),
+		COALESCE((
+			SELECT pd.decision_type
+			FROM policy_decisions pd
+			WHERE pd.device_id = devices.id
+			ORDER BY pd.created_at DESC
+			LIMIT 1
+		), ''),
+		COALESCE((
+			SELECT pd.target_vlan
+			FROM policy_decisions pd
+			WHERE pd.device_id = devices.id
+			ORDER BY pd.created_at DESC
+			LIMIT 1
+		), 0),
+		COALESCE((
+			SELECT pd.enforcement_action
+			FROM policy_decisions pd
+			WHERE pd.device_id = devices.id
+			ORDER BY pd.created_at DESC
+			LIMIT 1
+		), ''),
+		COALESCE((
+			SELECT pd.trust_score
+			FROM policy_decisions pd
+			WHERE pd.device_id = devices.id
+			ORDER BY pd.created_at DESC
+			LIMIT 1
+		), 0),
+		COALESCE((
+			SELECT pd.dry_run
+			FROM policy_decisions pd
+			WHERE pd.device_id = devices.id
+			ORDER BY pd.created_at DESC
+			LIMIT 1
+		), true),
+		COALESCE((
+			SELECT pd.reason_codes
+			FROM policy_decisions pd
+			WHERE pd.device_id = devices.id
+			ORDER BY pd.created_at DESC
+			LIMIT 1
+		), '[]'::jsonb),
+		COALESCE((
+			SELECT pd.explanation
+			FROM policy_decisions pd
+			WHERE pd.device_id = devices.id
+			ORDER BY pd.created_at DESC
+			LIMIT 1
+		), ''),
+		COALESCE((
+			SELECT pd.created_at
+			FROM policy_decisions pd
+			WHERE pd.device_id = devices.id
+			ORDER BY pd.created_at DESC
+			LIMIT 1
+		), '0001-01-01T00:00:00Z'::timestamptz),
 		COALESCE(current_switch_id::text, ''),
 		COALESCE(current_switch_name, ''),
 		COALESCE(current_management_ip::text, ''),
@@ -371,7 +525,10 @@ func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository {
 func scanDevice(scanner interface {
 	Scan(dest ...any) error
 }) (domain.Device, error) {
-	var item domain.Device
+	var (
+		item           domain.Device
+		rawReasonCodes []byte
+	)
 	err := scanner.Scan(
 		&item.ID,
 		&item.MACAddress,
@@ -397,6 +554,17 @@ func scanDevice(scanner interface {
 		&item.SophosLastSeenAt,
 		&item.LastPolicyDecision,
 		&item.LastPolicyEvaluatedAt,
+		&item.CurrentPolicyDecisionID,
+		&item.CurrentPolicyID,
+		&item.CurrentPolicyName,
+		&item.CurrentDecisionType,
+		&item.CurrentTargetVLAN,
+		&item.CurrentEnforcementAction,
+		&item.CurrentTrustScore,
+		&item.CurrentDecisionDryRun,
+		&rawReasonCodes,
+		&item.CurrentDecisionExplanation,
+		&item.CurrentPolicyDecisionAt,
 		&item.CurrentSwitchID,
 		&item.CurrentSwitchName,
 		&item.CurrentManagementIP,
@@ -445,7 +613,16 @@ func scanDevice(scanner interface {
 		&item.CreatedAt,
 		&item.UpdatedAt,
 	)
-	return item, err
+	if err != nil {
+		return item, err
+	}
+	if len(rawReasonCodes) > 0 {
+		_ = json.Unmarshal(rawReasonCodes, &item.CurrentReasonCodes)
+	}
+	if item.CurrentReasonCodes == nil {
+		item.CurrentReasonCodes = []string{}
+	}
+	return item, nil
 }
 
 func nullableTime(value time.Time) any {
@@ -946,6 +1123,21 @@ func (r *PostgresRepository) ListEnrichmentBackfillCandidates(ctx context.Contex
 	return devices, nil
 }
 
+func (r *PostgresRepository) FindByID(ctx context.Context, id string) (*domain.Device, error) {
+	row := r.pool.QueryRow(ctx, `
+		SELECT `+deviceSelectColumns+`
+		FROM devices
+		WHERE id = $1
+	`, strings.TrimSpace(id))
+	item, err := scanDevice(row)
+	if err != nil {
+		if strings.Contains(err.Error(), "no rows") {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &item, nil
+}
 func (r *PostgresRepository) ListByMAC(ctx context.Context, macAddress string) ([]domain.Device, error) {
 	query := `
 		SELECT ` + deviceSelectColumns + `
@@ -1292,5 +1484,20 @@ func (r *PostgresRepository) UpdateIPLearningState(ctx context.Context, macAddre
 		nullableTime(learnedAt),
 		nullableTime(lastBounceAt),
 	)
+	return err
+}
+
+func (r *PostgresRepository) UpdatePolicyEvaluationByID(ctx context.Context, deviceID, status, policyAction, policyReason, trustLevel, lastPolicyDecision string, evaluatedAt time.Time) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE devices
+		SET status = $2,
+			policy_action = $3,
+			policy_reason = $4,
+			trust_level = $5,
+			last_policy_decision = $6,
+			last_policy_evaluated_at = $7,
+			updated_at = NOW()
+		WHERE id = NULLIF($1, '')::uuid
+	`, strings.TrimSpace(deviceID), strings.TrimSpace(status), strings.TrimSpace(policyAction), strings.TrimSpace(policyReason), strings.TrimSpace(trustLevel), strings.TrimSpace(lastPolicyDecision), nullableTime(evaluatedAt))
 	return err
 }

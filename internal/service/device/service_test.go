@@ -590,3 +590,7 @@ func (s stubPolicyEvaluator) EnsureDefaults(ctx context.Context) error {
 func (s stubPolicyEvaluator) Evaluate(ctx context.Context, input policyservice.EvaluationInput) (policyservice.EvaluationResult, error) {
 	return s.result, nil
 }
+
+func (s stubPolicyEvaluator) EnforcementEnabled() bool {
+	return false
+}

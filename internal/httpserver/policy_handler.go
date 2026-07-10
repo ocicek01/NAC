@@ -3,7 +3,9 @@ package httpserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	policy "nac/internal/domain/policy"
@@ -11,89 +13,149 @@ import (
 )
 
 type policyService interface {
+	List(ctx context.Context, limit, offset int) ([]policy.Policy, error)
 	ListActive(ctx context.Context) ([]policy.Policy, error)
 	Create(ctx context.Context, input policyservice.CreateInput) (policy.Policy, error)
+	FindByID(ctx context.Context, id string) (*policy.Policy, error)
+	Update(ctx context.Context, id string, input policyservice.UpdateInput) (policy.Policy, error)
 	Disable(ctx context.Context, id string) error
+	ListDecisions(ctx context.Context, limit, offset int) ([]policy.Decision, error)
 }
 
 func registerPolicyRoutes(mux *http.ServeMux, service policyService) {
 	if service == nil {
 		return
 	}
-
 	mux.HandleFunc("/api/v1/policies", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			items, err := service.ListActive(r.Context())
+			limit, offset, err := parseLimitOffset(r, 50, 200)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			items, err := service.List(r.Context(), limit, offset)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(items)
+			writeJSON(w, http.StatusOK, items)
 		case http.MethodPost:
 			var payload struct {
-				Name          string `json:"name"`
-				Description   string `json:"description"`
-				Action        string `json:"action"`
-				MatchField    string `json:"match_field"`
-				MatchOperator string `json:"match_operator"`
-				MatchValue    string `json:"match_value"`
-				Priority      int    `json:"priority"`
+				Name, Description, DecisionType, EnforcementAction string
+				Priority, TargetVLAN                               int
+				Enabled, DryRun                                    bool
+				MatchConditions                                    []policy.Condition `json:"match_conditions"`
 			}
-
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 				http.Error(w, "invalid json body", http.StatusBadRequest)
 				return
 			}
-
-			item, err := service.Create(r.Context(), policyservice.CreateInput{
-				Name:          payload.Name,
-				Description:   payload.Description,
-				Action:        payload.Action,
-				MatchField:    payload.MatchField,
-				MatchOperator: payload.MatchOperator,
-				MatchValue:    payload.MatchValue,
-				Priority:      payload.Priority,
-			})
+			item, err := service.Create(r.Context(), policyservice.CreateInput{Name: payload.Name, Description: payload.Description, Priority: payload.Priority, Enabled: payload.Enabled, MatchConditions: payload.MatchConditions, DecisionType: payload.DecisionType, TargetVLAN: payload.TargetVLAN, EnforcementAction: payload.EnforcementAction, DryRun: payload.DryRun})
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(item)
+			writeJSON(w, http.StatusCreated, item)
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	})
-
 	mux.HandleFunc("/api/v1/policies/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
-		path := strings.TrimPrefix(r.URL.Path, "/api/v1/policies/")
-		if !strings.HasSuffix(path, "/disable") {
+		path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/policies/"), "/")
+		if path == "" {
 			http.NotFound(w, r)
 			return
 		}
-
-		id := strings.TrimSuffix(path, "/disable")
-		id = strings.Trim(id, "/")
-		if id == "" {
-			http.Error(w, "policy id is required", http.StatusBadRequest)
+		if strings.HasSuffix(path, "/disable") {
+			if r.Method != http.MethodPost {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			id := strings.Trim(strings.TrimSuffix(path, "/disable"), "/")
+			if err := service.Disable(r.Context(), id); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-
-		if err := service.Disable(r.Context(), id); err != nil {
+		switch r.Method {
+		case http.MethodGet:
+			item, err := service.FindByID(r.Context(), path)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if item == nil {
+				http.NotFound(w, r)
+				return
+			}
+			writeJSON(w, http.StatusOK, item)
+		case http.MethodPatch:
+			var payload struct {
+				Name, Description, DecisionType, EnforcementAction *string
+				Priority, TargetVLAN                               *int
+				Enabled, DryRun                                    *bool
+				MatchConditions                                    []policy.Condition `json:"match_conditions"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				http.Error(w, "invalid json body", http.StatusBadRequest)
+				return
+			}
+			item, err := service.Update(r.Context(), path, policyservice.UpdateInput{Name: payload.Name, Description: payload.Description, Priority: payload.Priority, Enabled: payload.Enabled, MatchConditions: payload.MatchConditions, DecisionType: payload.DecisionType, TargetVLAN: payload.TargetVLAN, EnforcementAction: payload.EnforcementAction, DryRun: payload.DryRun})
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, http.StatusOK, item)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+	mux.HandleFunc("/api/v1/policy-decisions", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		limit, offset, err := parseLimitOffset(r, 50, 200)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		items, err := service.ListDecisions(r.Context(), limit, offset)
+		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-
-		w.WriteHeader(http.StatusNoContent)
+		writeJSON(w, http.StatusOK, items)
 	})
+}
+
+func parseLimitOffset(r *http.Request, defaultLimit, maxLimit int) (int, int, error) {
+	limit, offset := defaultLimit, 0
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			return 0, 0, fmt.Errorf("invalid limit")
+		}
+		if parsed > maxLimit {
+			parsed = maxLimit
+		}
+		limit = parsed
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("offset")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 0 {
+			return 0, 0, fmt.Errorf("invalid offset")
+		}
+		offset = parsed
+	}
+	return limit, offset, nil
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
 }

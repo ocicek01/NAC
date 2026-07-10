@@ -18,6 +18,7 @@ import (
 	enforcementdomain "nac/internal/domain/enforcement"
 	macipbindingdomain "nac/internal/domain/macipbinding"
 	macobservation "nac/internal/domain/macobservation"
+	policydomain "nac/internal/domain/policy"
 	portendpointdomain "nac/internal/domain/portendpoint"
 	sessiondomain "nac/internal/domain/session"
 	switchportdomain "nac/internal/domain/switchport"
@@ -50,6 +51,8 @@ const (
 type PolicyEvaluator interface {
 	EnsureDefaults(ctx context.Context) error
 	Evaluate(ctx context.Context, input policyservice.EvaluationInput) (policyservice.EvaluationResult, error)
+	ListDecisionsByDevice(ctx context.Context, deviceID string, limit, offset int) ([]policydomain.Decision, error)
+	EnforcementEnabled() bool
 }
 
 type EnforcementRecorder interface {
@@ -1490,6 +1493,10 @@ func (s *Service) maybeAutoExecute(ctx context.Context, device domain.Device, de
 	if s.enforcement == nil || !s.autoExecute {
 		return
 	}
+	if s.policies != nil && !s.policies.EnforcementEnabled() {
+		s.logInfo("auto enforcement skipped because policy engine is in dry-run mode", "mac_address", decision.DeviceMACAddress, "policy_action", decision.PolicyAction, "switch_id", decision.SwitchID)
+		return
+	}
 
 	vlanID, executable := s.targetVLANForPolicyAction(decision.PolicyAction)
 	if !executable {
@@ -1747,4 +1754,90 @@ func defaultString(value, fallback string) string {
 		return fallback
 	}
 	return strings.TrimSpace(value)
+}
+
+func (s *Service) FindByID(ctx context.Context, id string) (*domain.Device, error) {
+	if s == nil || s.repository == nil {
+		return nil, nil
+	}
+	return s.repository.FindByID(ctx, strings.TrimSpace(id))
+}
+
+func (s *Service) ListPolicyDecisionsByDevice(ctx context.Context, deviceID string, limit, offset int) ([]policydomain.Decision, error) {
+	if s == nil || s.policies == nil {
+		return []policydomain.Decision{}, nil
+	}
+	return s.policies.ListDecisionsByDevice(ctx, strings.TrimSpace(deviceID), limit, offset)
+}
+
+func (s *Service) EvaluatePolicyByID(ctx context.Context, deviceID string) (policyservice.EvaluationResult, error) {
+	if s == nil || s.repository == nil || s.policies == nil {
+		return policyservice.EvaluationResult{}, fmt.Errorf("policy evaluation is not configured")
+	}
+	device, err := s.repository.FindByID(ctx, strings.TrimSpace(deviceID))
+	if err != nil {
+		return policyservice.EvaluationResult{}, err
+	}
+	if device == nil {
+		return policyservice.EvaluationResult{}, fmt.Errorf("device not found")
+	}
+	input := policyservice.EvaluationInput{DeviceID: device.ID, MACAddress: device.MACAddress, IPAddress: device.CurrentIPAddress, Hostname: device.Hostname, VendorClass: device.VendorClass, SwitchID: device.CurrentSwitchID, SwitchName: device.CurrentSwitchName, SwitchManagementIP: device.CurrentManagementIP, Interface: device.CurrentInterfaceName, DeviceType: device.DeviceType, FirstSeenAt: device.FirstSeenAt, LastSeenAt: device.LastSeenAt, KnownDevice: strings.TrimSpace(device.RegisteredOwner) != "" || strings.TrimSpace(device.OwnerUsername) != "", ManagedDevice: strings.TrimSpace(device.AssignedPolicy) != "" || device.DefaultVLANID > 0, EnrichmentSource: device.EnrichmentSource, EnrichmentStatus: device.EnrichmentStatus, RegisteredOwner: device.RegisteredOwner, OwnerUsername: device.OwnerUsername, OwnerDepartment: device.OwnerDepartment, OwnerRole: device.OwnerRole, AssignedPolicy: device.AssignedPolicy, RegisteredVendor: device.RegisteredVendor, DefaultVLANID: device.DefaultVLANID, LDAPRegistryMatch: strings.EqualFold(strings.TrimSpace(device.EnrichmentStatus), enrichmentStatusFound), PreviousQuarantine: strings.EqualFold(strings.TrimSpace(device.LastEnforcementAction), "blocked") || strings.EqualFold(strings.TrimSpace(device.LastEnforcementStatus), "failed"), LastPolicyDecision: device.LastPolicyDecision, LastEnforcementAction: device.LastEnforcementAction, LastEnforcementStatus: device.LastEnforcementStatus, AuthenticationMethod: device.AuthenticationMethod, ObservationSource: device.CurrentSourceType}
+	if s.switchPorts != nil && strings.TrimSpace(device.CurrentSwitchID) != "" && device.CurrentIfIndex > 0 {
+		if port, portErr := s.switchPorts.FindBySwitchIfIndex(ctx, device.CurrentSwitchID, device.CurrentIfIndex); portErr == nil && port != nil {
+			input.PortID = port.ID
+			input.PortProfile = derivePortProfile(*port)
+			input.CurrentVLAN = port.VLANID
+			if port.MACCount > 1 {
+				input.PortChangeCount = port.MACCount - 1
+			}
+		}
+	}
+	result, err := s.policies.Evaluate(ctx, input)
+	if err != nil {
+		return policyservice.EvaluationResult{}, err
+	}
+	trustLevel := result.Action
+	if result.TrustScore >= 80 {
+		trustLevel = "high"
+	} else if result.TrustScore >= 60 {
+		trustLevel = "medium"
+	} else if result.TrustScore >= 40 {
+		trustLevel = "low"
+	} else {
+		trustLevel = "critical"
+	}
+	if err := s.repository.UpdatePolicyEvaluationByID(ctx, device.ID, result.Status, result.Action, result.Explanation, trustLevel, result.DecisionType, time.Now().UTC()); err != nil {
+		return policyservice.EvaluationResult{}, err
+	}
+	if s.audit != nil {
+		status := "info"
+		action := "policy_enforcement_skipped"
+		payload := map[string]any{"decision_id": result.DecisionID, "decision_type": result.DecisionType, "target_vlan": result.TargetVLAN, "dry_run": result.DryRun, "reason_codes": result.ReasonCodes}
+		if !result.DryRun && s.autoExecute {
+			action = "policy_enforcement_requested"
+		}
+		if result.DryRun {
+			payload["reason"] = "dry_run"
+		}
+		_ = s.audit.Record(ctx, action, status, "device", device.ID, device.CurrentSwitchID, device.MACAddress, payload)
+	}
+	return result, nil
+}
+
+func derivePortProfile(port switchportdomain.Port) string {
+	candidates := []string{port.InterfaceAlias, port.InterfaceDescription, port.PortLabel}
+	for _, item := range candidates {
+		item = strings.ToLower(strings.TrimSpace(item))
+		switch {
+		case strings.Contains(item, "camera"):
+			return "camera"
+		case strings.Contains(item, "printer"):
+			return "printer"
+		case strings.Contains(item, "voice") || strings.Contains(item, "phone"):
+			return "voice"
+		case strings.Contains(item, "ap") || strings.Contains(item, "wireless"):
+			return "access-point"
+		}
+	}
+	return ""
 }

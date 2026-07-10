@@ -27,6 +27,17 @@ type Device struct {
 	SophosLastSeenAt            time.Time `json:"sophos_last_seen_at"`
 	LastPolicyDecision          string    `json:"last_policy_decision"`
 	LastPolicyEvaluatedAt       time.Time `json:"last_policy_evaluated_at"`
+	CurrentPolicyDecisionID     string    `json:"current_policy_decision_id"`
+	CurrentPolicyID             string    `json:"current_policy_id"`
+	CurrentPolicyName           string    `json:"current_policy_name"`
+	CurrentDecisionType         string    `json:"current_decision_type"`
+	CurrentTargetVLAN           int       `json:"current_target_vlan"`
+	CurrentEnforcementAction    string    `json:"current_enforcement_action"`
+	CurrentTrustScore           int       `json:"current_trust_score"`
+	CurrentDecisionDryRun       bool      `json:"current_decision_dry_run"`
+	CurrentReasonCodes          []string  `json:"current_reason_codes"`
+	CurrentDecisionExplanation  string    `json:"current_decision_explanation"`
+	CurrentPolicyDecisionAt     time.Time `json:"current_policy_decision_at"`
 	CurrentSwitchID             string    `json:"current_switch_id"`
 	CurrentSwitchName           string    `json:"current_switch_name"`
 	CurrentManagementIP         string    `json:"current_management_ip"`
