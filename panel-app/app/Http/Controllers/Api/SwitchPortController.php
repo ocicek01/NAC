@@ -28,7 +28,7 @@ class SwitchPortController extends Controller
         $port->loadMissing(['switch', 'currentLocation.endpoint']);
 
         return response()->json([
-            'data' => $this->switchStatsService->portDetail($port),
+            'data' => $this->switchStatsService->portDetail($port, true),
         ]);
     }
 
@@ -119,3 +119,5 @@ class SwitchPortController extends Controller
         ], 202);
     }
 }
+
+

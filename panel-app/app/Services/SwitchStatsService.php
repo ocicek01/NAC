@@ -275,17 +275,70 @@ class SwitchStatsService
         ];
     }
 
-    public function portDetail(SwitchPort $port): array
+    public function portDetail(SwitchPort $port, bool $withLiveLookup = false): array
     {
         $goPorts = $port->switch ? $this->goPortsForSwitch($port->switch) : [];
         $goDevices = $port->switch ? $this->goDevicesForSwitch($port->switch) : [];
 
-        return $this->portPayload($port, [], $goPorts, $goDevices) + [
+        $detail = $this->portPayload($port, [], $goPorts, $goDevices) + [
             'status' => $port->status,
             'nac_mode' => $port->nac_mode,
             'switch_id' => $port->switch_id,
             'switch_port_id' => $port->id,
         ];
+
+        if (! $withLiveLookup) {
+            return $detail;
+        }
+
+        return $this->mergeLivePortLookup($port, $detail);
+    }
+
+    protected function mergeLivePortLookup(SwitchPort $port, array $detail): array
+    {
+        if (! $port->switch || (int) ($port->if_index ?? 0) <= 0) {
+            return $detail;
+        }
+
+        $client = $this->nacApi();
+        if (! $client) {
+            return $detail;
+        }
+
+        try {
+            $goSwitchId = $this->resolveGoSwitchId($port->switch);
+            if ($goSwitchId === null) {
+                return $detail;
+            }
+
+            $live = $client->switchPortLive($goSwitchId, (int) $port->if_index);
+        } catch (RuntimeException) {
+            return $detail;
+        }
+
+        if (! is_array($live)) {
+            return $detail;
+        }
+
+        $liveMacs = array_values(array_filter(array_map(function ($mac) {
+            $candidate = trim((string) $mac);
+            return $candidate !== '' ? $candidate : null;
+        }, (array) ($live['mac_addresses'] ?? []))));
+
+        if (($detail['mac'] ?? '-') === '-' && $liveMacs !== []) {
+            $detail['mac'] = $liveMacs[0];
+        }
+
+        $liveMacCount = (int) ($live['mac_count'] ?? count($liveMacs));
+        if ($liveMacCount > (int) ($detail['macCount'] ?? 0)) {
+            $detail['macCount'] = $liveMacCount;
+        }
+
+        if (($detail['label'] ?? '') === '' && filled($live['interface_name'] ?? null)) {
+            $detail['label'] = (string) $live['interface_name'];
+        }
+
+        return $detail;
     }
 
     protected function portStatusSegments(Collection $ports): array
@@ -1515,4 +1568,6 @@ class SwitchStatsService
         ];
     }
 }
+
+
 

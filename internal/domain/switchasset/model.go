@@ -69,3 +69,17 @@ type LiveDetail struct {
 	ConnectedDeviceCount int              `json:"connected_device_count"`
 	ObservedAt           time.Time        `json:"observed_at"`
 }
+
+type LivePortLookup struct {
+	SwitchID             string    `json:"switch_id"`
+	SwitchName           string    `json:"switch_name"`
+	ManagementIP         string    `json:"management_ip"`
+	IfIndex              int       `json:"if_index"`
+	BridgePort           int       `json:"bridge_port"`
+	InterfaceName        string    `json:"interface_name"`
+	InterfaceDescription string    `json:"interface_description"`
+	MACAddresses         []string  `json:"mac_addresses"`
+	MACCount             int       `json:"mac_count"`
+	FDBSource            string    `json:"fdb_source"`
+	ObservedAt           time.Time `json:"observed_at"`
+}

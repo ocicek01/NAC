@@ -293,6 +293,96 @@ func (s *Service) PortSummaryBySwitch(ctx context.Context, switchID string) (any
 	return summary, nil
 }
 
+func (s *Service) LivePortLookup(ctx context.Context, switchID string, ifIndex int) (*domain.LivePortLookup, error) {
+	switchID = strings.TrimSpace(switchID)
+	if switchID == "" {
+		return nil, fmt.Errorf("switch id is required")
+	}
+	if ifIndex <= 0 {
+		return nil, fmt.Errorf("if_index must be greater than zero")
+	}
+
+	asset, err := s.repository.FindByID(ctx, switchID)
+	if err != nil {
+		return nil, err
+	}
+	if asset == nil {
+		return nil, fmt.Errorf("switch not found")
+	}
+	if s.client == nil {
+		return nil, fmt.Errorf("snmp client is not configured")
+	}
+
+	lookupCtx, cancel := context.WithTimeout(ctx, time.Duration(asset.SNMPTimeoutMS+1500)*time.Millisecond)
+	defer cancel()
+
+	target := snmp.SwitchTarget{
+		Address:   asset.ManagementIP,
+		Port:      uint16(asset.SNMPPort),
+		Community: asset.SNMPCommunity,
+		Timeout:   time.Duration(asset.SNMPTimeoutMS) * time.Millisecond,
+		Retries:   asset.SNMPRetries,
+		Vendor:    asset.Vendor,
+		Model:     asset.Model,
+	}
+
+	live := &domain.LivePortLookup{
+		SwitchID:     asset.ID,
+		SwitchName:   asset.Name,
+		ManagementIP: asset.ManagementIP,
+		IfIndex:      ifIndex,
+		ObservedAt:   time.Now().UTC(),
+	}
+
+	if bridgePort, bridgeErr := s.client.FindBridgePortByIfIndex(lookupCtx, target, ifIndex); bridgeErr == nil && bridgePort > 0 {
+		live.BridgePort = bridgePort
+		if resolved, resolveErr := s.client.ResolveBridgePort(lookupCtx, target, bridgePort); resolveErr == nil {
+			live.InterfaceName = strings.TrimSpace(resolved.InterfaceName)
+			live.InterfaceDescription = strings.TrimSpace(resolved.InterfaceDescription)
+		}
+	}
+
+	if states, stateErr := s.client.WalkInterfaces(lookupCtx, target); stateErr == nil {
+		for _, state := range states {
+			if state.IfIndex != ifIndex {
+				continue
+			}
+			if live.InterfaceName == "" {
+				live.InterfaceName = strings.TrimSpace(state.Name)
+			}
+			if live.InterfaceDescription == "" {
+				live.InterfaceDescription = strings.TrimSpace(state.Description)
+			}
+			break
+		}
+	}
+
+	discovery, err := s.client.DiscoverFDB(lookupCtx, target)
+	if err != nil {
+		return nil, err
+	}
+	live.FDBSource = discovery.Source
+
+	seen := make(map[string]struct{})
+	for _, entry := range discovery.Entries {
+		if entry.IfIndex != ifIndex && (live.BridgePort <= 0 || entry.BridgePort != live.BridgePort) {
+			continue
+		}
+		mac := strings.TrimSpace(entry.MACAddress)
+		if mac == "" {
+			continue
+		}
+		if _, ok := seen[mac]; ok {
+			continue
+		}
+		seen[mac] = struct{}{}
+		live.MACAddresses = append(live.MACAddresses, mac)
+	}
+
+	sort.Strings(live.MACAddresses)
+	live.MACCount = len(live.MACAddresses)
+	return live, nil
+}
 func (s *Service) LiveDetail(ctx context.Context, id string) (*domain.LiveDetail, error) {
 	asset, err := s.repository.FindByID(ctx, strings.TrimSpace(id))
 	if err != nil {

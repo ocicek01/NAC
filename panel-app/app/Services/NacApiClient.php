@@ -159,6 +159,11 @@ class NacApiClient
         return $this->get("/api/v1/switches/{$id}/ports/summary");
     }
 
+    public function switchPortLive(string $switchId, int $ifIndex): array
+    {
+        return $this->optionalGet("/api/v1/switches/{$switchId}/ports/{$ifIndex}/live");
+    }
+
     public function executeSNMPPortVLAN(array $payload): array
     {
         return $this->post('/api/v1/enforcement/snmp-port-vlan', $payload);
@@ -353,3 +358,5 @@ class NacApiClient
         }
     }
 }
+
+
