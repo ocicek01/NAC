@@ -296,7 +296,12 @@ class SwitchStatsService
 
     protected function mergeLivePortLookup(SwitchPort $port, array $detail): array
     {
-        if (! $port->switch || (int) ($port->if_index ?? 0) <= 0) {
+        if (! $port->switch) {
+            return $detail;
+        }
+
+        $lookupIfIndex = $this->liveLookupIfIndex($port);
+        if ($lookupIfIndex <= 0) {
             return $detail;
         }
 
@@ -311,7 +316,7 @@ class SwitchStatsService
                 return $detail;
             }
 
-            $live = $client->switchPortLive($goSwitchId, (int) $port->if_index);
+            $live = $client->switchPortLive($goSwitchId, $lookupIfIndex);
         } catch (RuntimeException) {
             return $detail;
         }
@@ -339,6 +344,26 @@ class SwitchStatsService
         }
 
         return $detail;
+    }
+
+    protected function liveLookupIfIndex(SwitchPort $port): int
+    {
+        $ifIndex = (int) ($port->if_index ?? 0);
+        if ($ifIndex > 0) {
+            return $ifIndex;
+        }
+
+        $portIndex = (int) ($port->port_index ?? 0);
+        if ($portIndex > 0) {
+            return $portIndex;
+        }
+
+        $name = trim((string) ($port->port_name ?? ''));
+        if ($name !== '' && preg_match('/(\d+)\s*$/', $name, $matches) === 1) {
+            return (int) ($matches[1] ?? 0);
+        }
+
+        return 0;
     }
 
     protected function portStatusSegments(Collection $ports): array
