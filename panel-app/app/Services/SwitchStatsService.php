@@ -300,8 +300,8 @@ class SwitchStatsService
             return $detail;
         }
 
-        $lookupIfIndex = $this->liveLookupIfIndex($port);
-        if ($lookupIfIndex <= 0) {
+        $lookupCandidates = $this->liveLookupIfIndexes($port);
+        if ($lookupCandidates === []) {
             return $detail;
         }
 
@@ -315,13 +315,34 @@ class SwitchStatsService
             if ($goSwitchId === null) {
                 return $detail;
             }
-
-            $live = $client->switchPortLive($goSwitchId, $lookupIfIndex);
         } catch (RuntimeException) {
             return $detail;
         }
 
-        if (! is_array($live)) {
+        $live = null;
+        foreach ($lookupCandidates as $candidateIfIndex) {
+            try {
+                $response = $client->switchPortLive($goSwitchId, $candidateIfIndex);
+            } catch (RuntimeException) {
+                continue;
+            }
+
+            if (! is_array($response) || $response === []) {
+                continue;
+            }
+
+            $responseMacs = array_values(array_filter(array_map(function ($mac) {
+                $candidate = trim((string) $mac);
+                return $candidate !== '' ? $candidate : null;
+            }, (array) ($response['mac_addresses'] ?? []))));
+
+            $live = $response;
+            if ($responseMacs !== []) {
+                break;
+            }
+        }
+
+        if (! is_array($live) || $live === []) {
             return $detail;
         }
 
@@ -346,24 +367,29 @@ class SwitchStatsService
         return $detail;
     }
 
-    protected function liveLookupIfIndex(SwitchPort $port): int
+    protected function liveLookupIfIndexes(SwitchPort $port): array
     {
+        $candidates = [];
+
         $ifIndex = (int) ($port->if_index ?? 0);
         if ($ifIndex > 0) {
-            return $ifIndex;
+            $candidates[] = $ifIndex;
         }
 
         $portIndex = (int) ($port->port_index ?? 0);
         if ($portIndex > 0) {
-            return $portIndex;
+            $candidates[] = $portIndex;
         }
 
         $name = trim((string) ($port->port_name ?? ''));
         if ($name !== '' && preg_match('/(\d+)\s*$/', $name, $matches) === 1) {
-            return (int) ($matches[1] ?? 0);
+            $derived = (int) ($matches[1] ?? 0);
+            if ($derived > 0) {
+                $candidates[] = $derived;
+            }
         }
 
-        return 0;
+        return array_values(array_unique(array_filter($candidates, fn (int $value) => $value > 0)));
     }
 
     protected function portStatusSegments(Collection $ports): array
