@@ -316,6 +316,28 @@
         .tabs-row { display:flex; gap:22px; margin: 8px 0 12px; padding: 0 8px; }
         .tab-link { color:#495b75; text-decoration:none; font-weight:500; padding: 8px 0; border-bottom:2px solid transparent; }
         .tab-link.is-active { color:var(--primary); border-bottom-color:var(--primary); }
+        .tab-panel { display:none; }
+        .tab-panel.is-active { display:block; }
+        .table-panel-shell { overflow:hidden; }
+        .card-head-stack { align-items:flex-start; }
+        .table-subtitle { margin-top:4px; color:var(--body); font-size:.9rem; }
+        .table-toolbar { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+        .table-search-wrap { min-width:280px; display:flex; align-items:center; gap:10px; border:1px solid var(--line); border-radius:10px; min-height:40px; padding:0 12px; background:#fff; }
+        .table-search-wrap input { border:0; outline:0; background:transparent; width:100%; color:var(--heading); }
+        .table-meta { color:var(--body); font-size:.88rem; font-weight:600; }
+        .table-panel-body { padding:0 14px 14px; }
+        .port-list-table-wrap { overflow:auto; border:1px solid var(--line); border-radius:12px; }
+        .port-list-table { width:100%; border-collapse:collapse; min-width:1120px; background:#fff; }
+        .port-list-table th, .port-list-table td { padding:12px 14px; text-align:left; border-bottom:1px solid #e7edf5; font-size:.9rem; white-space:nowrap; }
+        .port-list-table th { position:sticky; top:0; background:#f8fbfe; z-index:1; color:#52647c; font-size:.8rem; letter-spacing:.02em; text-transform:uppercase; }
+        .port-list-table tbody tr { cursor:pointer; transition:background .15s ease; }
+        .port-list-table tbody tr:hover { background:#f7fbff; }
+        .port-list-table tbody tr.is-selected { background:rgba(47,111,236,.08); }
+        .table-status-badge { display:inline-flex; align-items:center; gap:8px; min-height:28px; padding:0 10px; border-radius:999px; border:1px solid rgba(149,163,184,.24); font-weight:700; font-size:.82rem; }
+        .table-status-dot { width:9px; height:9px; border-radius:999px; }
+        .table-empty { text-align:center; color:var(--body); padding:18px 14px; }
+        .placeholder-panel { padding:18px; }
+        .placeholder-copy { color:var(--body); font-size:.95rem; }
         .detail-grid { display:flex; gap:12px; align-items:flex-start; }
         .main-column { flex:1 1 auto; min-width:0; display:grid; gap:12px; }
         .side-column { flex:0 0 330px; min-width:330px; display:grid; gap:12px; }
@@ -592,19 +614,21 @@
                 @endforeach
             </section>
 
-            <div class="tabs-row">
-                <a href="#" class="tab-link is-active">Port Haritasi</a>
-                <a href="#" class="tab-link">Port Listesi</a>
-                <a href="#" class="tab-link">Endpoint Listesi</a>
-                <a href="#" class="tab-link">Olaylar</a>
-                <a href="#" class="tab-link">Konfigurasyon</a>
+            <div class="tabs-row" id="switch-detail-tabs">
+                <a href="#" class="tab-link is-active" data-tab="map">Port Haritasi</a>
+                <a href="#" class="tab-link" data-tab="port-list">Port Listesi</a>
+                <a href="#" class="tab-link" data-tab="endpoint-list">Endpoint Listesi</a>
+                <a href="#" class="tab-link" data-tab="events">Olaylar</a>
+                <a href="#" class="tab-link" data-tab="configuration">Konfigurasyon</a>
                 @if (!empty($switchData['supportsPoe']))
-                    <a href="#" class="tab-link">PoE</a>
+                    <a href="#" class="tab-link" data-tab="poe">PoE</a>
                 @endif
-                <a href="#" class="tab-link">Performans</a>
+                <a href="#" class="tab-link" data-tab="performance">Performans</a>
             </div>
 
-            <section class="detail-grid">
+            <section class="tab-panel is-active" data-tab-panel="map">
+                <section class="detail-grid">
+
                 <div class="main-column">
                     <div class="card-shell">
                         <div class="card-head">
@@ -794,6 +818,68 @@
                         </div>
                     @endif
                 </div>
+                </section>
+            </section>
+
+            <section class="tab-panel" data-tab-panel="port-list">
+                <div class="card-shell table-panel-shell">
+                    <div class="card-head card-head-stack">
+                        <div>
+                            <h2>PORT LISTESI</h2>
+                            <div class="table-subtitle">Port, VLAN, MAC, durum ve endpoint bilgilerini tablo halinde inceleyin.</div>
+                        </div>
+                        <div class="table-toolbar">
+                            <div class="table-search-wrap">
+                                <i class="bi bi-search"></i>
+                                <input type="search" id="port-list-search" placeholder="MAC, port, VLAN, hostname ara">
+                            </div>
+                            <div class="table-meta" id="port-list-meta">0 port</div>
+                        </div>
+                    </div>
+                    <div class="table-panel-body">
+                        <div class="port-list-table-wrap">
+                            <table class="port-list-table">
+                                <thead>
+                                    <tr>
+                                        <th>Port</th>
+                                        <th>Durum</th>
+                                        <th>VLAN</th>
+                                        <th>MAC Sayisi</th>
+                                        <th>MAC</th>
+                                        <th>IP</th>
+                                        <th>Hostname</th>
+                                        <th>Cihaz</th>
+                                        <th>Kullanici</th>
+                                        <th>Policy</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="port-list-table-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="tab-panel" data-tab-panel="endpoint-list">
+                <div class="card-shell placeholder-panel"><div class="placeholder-copy">Endpoint listesi sonraki adimda ayri tablo olarak doldurulacak.</div></div>
+            </section>
+
+            <section class="tab-panel" data-tab-panel="events">
+                <div class="card-shell placeholder-panel"><div class="placeholder-copy">Olaylar sekmesi icin mevcut yandaki olay ozeti genisletilecek.</div></div>
+            </section>
+
+            <section class="tab-panel" data-tab-panel="configuration">
+                <div class="card-shell placeholder-panel"><div class="placeholder-copy">Konfigurasyon sekmesi hazir degil.</div></div>
+            </section>
+
+            @if (!empty($switchData['supportsPoe']))
+                <section class="tab-panel" data-tab-panel="poe">
+                    <div class="card-shell placeholder-panel"><div class="placeholder-copy">PoE detay sekmesi hazir degil.</div></div>
+                </section>
+            @endif
+
+            <section class="tab-panel" data-tab-panel="performance">
+                <div class="card-shell placeholder-panel"><div class="placeholder-copy">Performans sekmesi hazir degil.</div></div>
             </section>
         </main>
     </div>
@@ -982,6 +1068,11 @@
         const portEventsUrl = '/api/events/ports';
         const switchPortRefreshUrlTemplate = '/api/switch-ports/__PORT__/refresh-live';
         const portAllowForm = document.getElementById('port-allow-form');
+        const tabLinks = Array.from(document.querySelectorAll('[data-tab]'));
+        const tabPanels = Array.from(document.querySelectorAll('[data-tab-panel]'));
+        const portListSearchInput = document.getElementById('port-list-search');
+        const portListTableBody = document.getElementById('port-list-table-body');
+        const portListMeta = document.getElementById('port-list-meta');
         const portGuestForm = document.getElementById('port-guest-form');
         const portBlockForm = document.getElementById('port-block-form');
         const portAllowVlanInput = document.getElementById('port-allow-vlan');
@@ -1335,6 +1426,96 @@
             throw new Error('Discovery zaman asimina ugradi.');
         }
 
+        function resolveStatusLabel(data) {
+            return statusLabels[String(data.state || '').trim()] || String(data.statusText || '-').trim() || '-';
+        }
+        function portListFilterValue(data) {
+            return [
+                data.label,
+                data.mac,
+                data.ip,
+                data.hostname,
+                data.vlan,
+                data.vlanLabel,
+                data.user,
+                data.deviceType,
+                data.policyText,
+                resolveStatusLabel(data)
+            ].map(function (value) {
+                return String(value || '').toLowerCase();
+            }).join(' ');
+        }
+        function renderPortListTable() {
+            if (!portListTableBody) {
+                return;
+            }
+            const query = String(portListSearchInput ? portListSearchInput.value : '').trim().toLowerCase();
+            const rows = Object.values(portMap)
+                .slice()
+                .sort(function (left, right) {
+                    const leftOrder = Number(left.display_order || left.panel_number || 9999);
+                    const rightOrder = Number(right.display_order || right.panel_number || 9999);
+                    if (leftOrder !== rightOrder) {
+                        return leftOrder - rightOrder;
+                    }
+                    return String(left.label || '').localeCompare(String(right.label || ''), 'tr');
+                })
+                .filter(function (item) {
+                    if (!query) {
+                        return true;
+                    }
+                    return portListFilterValue(item).includes(query);
+                });
+            portListMeta.textContent = rows.length + ' port';
+            if (rows.length === 0) {
+                portListTableBody.innerHTML = '<tr><td colspan="10" class="table-empty">Eslesen port bulunamadi.</td></tr>';
+                return;
+            }
+            portListTableBody.innerHTML = rows.map(function (item) {
+                const isSelected = String(item.id) === String(currentSelectedPortId);
+                const statusColor = stateColors[String(item.state || 'down')] || '#94a3b8';
+                const statusLabel = resolveStatusLabel(item);
+                const cells = [
+                    item.label || '-',
+                    '<span class="table-status-badge"><span class="table-status-dot" style="background:' + statusColor + ';"></span>' + statusLabel + '</span>',
+                    item.vlanLabel || item.vlan || '-',
+                    String(item.macCount ?? 0),
+                    item.mac || '-',
+                    item.ip || '-',
+                    item.hostname || '-',
+                    item.deviceType || '-',
+                    item.user || '-',
+                    item.policyText || '-'
+                ];
+                return '<tr data-port-row-id="' + String(item.id) + '" class="' + (isSelected ? 'is-selected' : '') + '">' + cells.map(function (cell) {
+                    return '<td>' + cell + '</td>';
+                }).join('') + '</tr>';
+            }).join('');
+        }
+        function activateTab(tabName) {
+            tabLinks.forEach(function (link) {
+                link.classList.toggle('is-active', link.dataset.tab === tabName);
+            });
+            tabPanels.forEach(function (panel) {
+                panel.classList.toggle('is-active', panel.dataset.tabPanel === tabName);
+            });
+        }
+        function bindPortListTableEvents() {
+            if (!portListTableBody) {
+                return;
+            }
+            portListTableBody.addEventListener('click', function (event) {
+                const row = event.target.closest('[data-port-row-id]');
+                if (!row) {
+                    return;
+                }
+                const portId = row.dataset.portRowId;
+                activateTab('map');
+                updateSelectedPort(portId);
+                refreshPortDetail(portId).catch(function () {});
+                requestPortSnapshotRefresh(portId);
+            });
+        }
         function mergePortData(portId, patch) {
             const key = String(portId);
             if (!portMap[key]) {
@@ -1369,6 +1550,7 @@
             }
 
             portMap[key] = next;
+            renderPortListTable();
         }
 
         function applyPortVlanChange(portId, vlanId) {
@@ -1837,6 +2019,7 @@
 
             syncPortActionForms(data);
             syncSelectedPortQuery(portId);
+            renderPortListTable();
         }
 
         document.querySelectorAll('.port-tile, .uplink-port').forEach(function (tile) {
@@ -1987,6 +2170,21 @@
             }
         });
 
+        tabLinks.forEach(function (link) {
+            link.addEventListener('click', function (event) {
+                event.preventDefault();
+                activateTab(link.dataset.tab || 'map');
+            });
+        });
+
+        if (portListSearchInput) {
+            portListSearchInput.addEventListener('input', function () {
+                renderPortListTable();
+            });
+        }
+
+        bindPortListTableEvents();
+        renderPortListTable();
         applySelectedPortFromQuery();
         if (portMap[String(currentSelectedPortId)]) {
             syncPortActionForms(portMap[String(currentSelectedPortId)]);
@@ -2006,4 +2204,5 @@
     </script>
 </body>
 </html>
+
 
