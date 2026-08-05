@@ -77,8 +77,8 @@ func (r *PostgresRepository) ReplaceBySwitch(ctx context.Context, switchID strin
 		)
 		VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-			$11, $12, $13, $14,  $15, $16, $17, $18, $19, $20, $21,
-			$21, $22, $23::jsonb, $24, $25, $26, $27, $28::numeric, $29, NULLIF($30, '')::uuid,
+            $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
+            $22, $23::jsonb, $24, $25, $26, $27, $28::numeric, $29, NULLIF($30, '')::uuid,
 			$31, $32, $33, $34, $35::jsonb, $36::jsonb, NULLIF($37, '0001-01-01T00:00:00Z')::timestamptz, $38, $39, $40
 		)
 	`
