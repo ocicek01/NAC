@@ -1555,6 +1555,8 @@
                 });
             }
             portMap[key] = next;
+            applyPortStateToTile(key, next.state);
+            applyPortRoleToTile(key, next);
             renderPortListTable();
         }
 
@@ -1823,11 +1825,22 @@
         }
 
         function applyPortStateToTile(portId, state) {
+            if (!state) {
+                return;
+            }
+
             document.querySelectorAll('[data-port-id="' + String(portId) + '"]').forEach(function (tile) {
                 Array.from(tile.classList)
                     .filter(function (className) { return className.indexOf('state-') === 0; })
                     .forEach(function (className) { tile.classList.remove(className); });
                 tile.classList.add('state-' + state);
+            });
+        }
+
+        function applyPortRoleToTile(portId, data) {
+            const isUplink = Boolean(data && (data.isUplink || data.portType === 'Uplink' || data.port_type === 'Uplink'));
+            document.querySelectorAll('[data-port-id="' + String(portId) + '"]').forEach(function (tile) {
+                tile.classList.toggle('is-uplink-role', isUplink);
             });
         }
 
