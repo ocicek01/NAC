@@ -1,0 +1,27 @@
+eap nac_eap {
+	default_eap_type = ttls
+	timer_expire = 60
+	ignore_unknown_eap_types = no
+	cisco_accounting_username_bug = no
+
+	tls-config tls-nac {
+		private_key_password = "@@RADIUS_TLS_KEY_PASSWORD@@"
+		private_key_file = "@@RADIUS_TLS_PRIVATE_KEY@@"
+		certificate_file = "@@RADIUS_TLS_CERTIFICATE@@"
+		ca_file = "@@RADIUS_CLIENT_CA_FILE@@"
+		cipher_list = "HIGH"
+		tls_min_version = "1.2"
+	}
+
+	ttls {
+		tls = tls-nac
+		default_eap_type = pap
+		copy_request_to_tunnel = yes
+		use_tunneled_reply = yes
+		virtual_server = nac-inner-tunnel
+	}
+
+	tls {
+		tls = tls-nac
+	}
+}

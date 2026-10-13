@@ -1,0 +1,22 @@
+exec nac_mab_authorize {
+	wait = yes
+	program = "/usr/local/libexec/nac-radius-helper --mode authorize --username '%{User-Name}' --mac '%{Calling-Station-Id}' --nas-ip '%{NAS-IP-Address}' --nas-identifier '%{NAS-Identifier}' --nas-port '%{NAS-Port}' --nas-port-id '%{NAS-Port-Id}' --called-station-id '%{Called-Station-Id}' --calling-station-id '%{Calling-Station-Id}'"
+	input_pairs = request
+	output_pairs = reply
+	shell_escape = yes
+}
+
+exec nac_user_authorize {
+	wait = yes
+	program = "/usr/local/libexec/nac-radius-helper --mode authorize --username '%{User-Name}' --mac '%{Calling-Station-Id}' --nas-ip '%{NAS-IP-Address}' --nas-identifier '%{NAS-Identifier}' --nas-port '%{NAS-Port}' --nas-port-id '%{NAS-Port-Id}' --called-station-id '%{Called-Station-Id}' --calling-station-id '%{Calling-Station-Id}'"
+	input_pairs = request
+	output_pairs = reply
+	shell_escape = yes
+}
+
+exec nac_accounting {
+	wait = yes
+	program = "/usr/local/libexec/nac-radius-helper --mode accounting --username '%{User-Name}' --mac '%{Calling-Station-Id}' --nas-ip '%{NAS-IP-Address}' --nas-identifier '%{NAS-Identifier}' --nas-port '%{NAS-Port}' --nas-port-id '%{NAS-Port-Id}' --nas-port-type '%{NAS-Port-Type}' --called-station-id '%{Called-Station-Id}' --calling-station-id '%{Calling-Station-Id}' --acct-status-type '%{Acct-Status-Type}' --acct-session-id '%{Acct-Session-Id}' --framed-ip-address '%{Framed-IP-Address}' --session-time '%{Acct-Session-Time}' --terminate-cause '%{Acct-Terminate-Cause}' --event-timestamp '%{Event-Timestamp}' --acct-delay-time '%{Acct-Delay-Time}'"
+	input_pairs = request
+	shell_escape = yes
+}

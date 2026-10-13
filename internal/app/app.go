@@ -181,7 +181,7 @@ func New(ctx context.Context) (*App, error) {
 	trapForwarder := snmptrapservice.NewHTTPPortStatusForwarder(cfg.SNMPTrap.ForwardEnabled, cfg.SNMPTrap.ForwardURL, cfg.SNMPTrap.ForwardToken, time.Duration(cfg.SNMPTrap.ForwardTimeoutSec)*time.Second)
 	snmpTrapService := snmptrapservice.NewService(logger, snmpTrapRepository, switchRepository, switchPortRepository, trapWindowService, trapForwarder)
 
-	server := httpserver.New(cfg.App.Port, logger, dhcpEventService, switchAssetService, portEndpointService, macLookupService, macObservationService, topologyService, discoveryJobService, deviceService, guestIdentityService, portalRegistrationService, radiusSessionService, policyEngineService, enforcementEngineService, radiusService, portEventService, auditService)
+	server := httpserver.New(cfg.App.Port, logger, dhcpEventService, switchAssetService, portEndpointService, macLookupService, macObservationService, topologyService, discoveryJobService, deviceService, guestIdentityService, portalRegistrationService, radiusSessionService, policyEngineService, enforcementEngineService, radiusService, cfg.Radius.APIToken, portEventService, auditService)
 	collector := dhcpcollector.New(cfg.DHCP, logger, dhcpEventService)
 	trapCollector := snmptrapcollector.New(cfg.SNMPTrap, logger, snmpTrapService)
 

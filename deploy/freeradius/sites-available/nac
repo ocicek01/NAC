@@ -1,0 +1,43 @@
+server nac {
+	listen {
+		type = auth
+		ipaddr = *
+		port = 1812
+	}
+	listen {
+		type = acct
+		ipaddr = *
+		port = 1813
+	}
+
+	authorize {
+		filter_username
+
+		# A MAC-formatted identity is MAB. It is authorized by NAC and never sent to LDAP.
+		if (&User-Name =~ /^(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$/) {
+			nac_mab_authorize
+			if (ok) {
+				accept
+			}
+			reject
+		}
+
+		nac_eap
+	}
+
+	authenticate {
+		nac_eap
+	}
+
+	accounting {
+		detail
+		unix
+		nac_accounting
+	}
+
+	post-auth {
+		Post-Auth-Type REJECT {
+			attr_filter.access_reject
+		}
+	}
+}

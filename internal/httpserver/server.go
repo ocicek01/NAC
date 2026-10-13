@@ -13,7 +13,7 @@ type Server struct {
 	logger     *slog.Logger
 }
 
-func New(port string, logger *slog.Logger, dhcpEventIngestor dhcpEventIngestor, switchService switchService, portEndpointService portEndpointService, macLookupService macLookupService, macObservationService macObservationService, topologyService topologyService, discoveryJobService discoveryJobService, deviceService deviceService, guestService guestService, portalService portalService, sessionService sessionService, policyService policyService, enforcementService enforcementService, radiusService radiusService, portEventService portEventService, auditLogService auditLogService) *Server {
+func New(port string, logger *slog.Logger, dhcpEventIngestor dhcpEventIngestor, switchService switchService, portEndpointService portEndpointService, macLookupService macLookupService, macObservationService macObservationService, topologyService topologyService, discoveryJobService discoveryJobService, deviceService deviceService, guestService guestService, portalService portalService, sessionService sessionService, policyService policyService, enforcementService enforcementService, radiusService radiusService, radiusAPIToken string, portEventService portEventService, auditLogService auditLogService) *Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -31,7 +31,7 @@ func New(port string, logger *slog.Logger, dhcpEventIngestor dhcpEventIngestor, 
 	registerSessionRoutes(mux, sessionService)
 	registerPolicyRoutes(mux, policyService)
 	registerEnforcementRoutes(mux, enforcementService)
-	registerRadiusRoutes(mux, radiusService)
+	registerRadiusRoutes(mux, radiusService, radiusAPIToken)
 	registerPortEventRoutes(mux, portEventService)
 	registerAuditLogRoutes(mux, auditLogService)
 

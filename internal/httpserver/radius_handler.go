@@ -2,6 +2,8 @@ package httpserver
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -14,7 +16,7 @@ type radiusService interface {
 	Accounting(ctx context.Context, req domain.AccountingRequest) (domain.AccountingResponse, error)
 }
 
-func registerRadiusRoutes(mux *http.ServeMux, service radiusService) {
+func registerRadiusRoutes(mux *http.ServeMux, service radiusService, apiToken string) {
 	if service == nil {
 		return
 	}
@@ -22,6 +24,9 @@ func registerRadiusRoutes(mux *http.ServeMux, service radiusService) {
 	mux.HandleFunc("/api/v1/radius/authorize", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if !authorizeRadiusRequest(w, r, apiToken) {
 			return
 		}
 
@@ -44,6 +49,9 @@ func registerRadiusRoutes(mux *http.ServeMux, service radiusService) {
 	mux.HandleFunc("/api/v1/radius/accounting", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if !authorizeRadiusRequest(w, r, apiToken) {
 			return
 		}
 
@@ -71,4 +79,20 @@ func registerRadiusRoutes(mux *http.ServeMux, service radiusService) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
 	})
+}
+
+func authorizeRadiusRequest(w http.ResponseWriter, r *http.Request, apiToken string) bool {
+	if apiToken == "" {
+		return true
+	}
+
+	expected := sha256.Sum256([]byte("Bearer " + apiToken))
+	provided := sha256.Sum256([]byte(r.Header.Get("Authorization")))
+	if subtle.ConstantTimeCompare(expected[:], provided[:]) == 1 {
+		return true
+	}
+
+	w.Header().Set("WWW-Authenticate", "Bearer")
+	http.Error(w, "unauthorized", http.StatusUnauthorized)
+	return false
 }

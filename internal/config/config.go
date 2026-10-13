@@ -50,6 +50,7 @@ type RadiusConfig struct {
 	GuestVLAN, RegistrationVLAN, QuarantineVLAN string
 	CoAPort                                     int
 	CoAClientPath                               string
+	APIToken                                    string
 }
 type IdentityConfig struct {
 	LDAPHost, LDAPBindDN, LDAPBindPassword, LDAPBaseDN, LDAPDeviceBaseDN, LDAPStaffGID, LDAPStudentGID, LDAPFacultyGID string
@@ -100,7 +101,7 @@ func Load() (Config, error) {
 		DHCP:            DHCPCollectorConfig{Enabled: getEnvAsBool("DHCP_COLLECTOR_ENABLED", false), Interface: getEnv("DHCP_INTERFACE", "eth0"), Promiscuous: getEnvAsBool("DHCP_PROMISCUOUS", true), SnapshotLen: getEnvAsInt32("DHCP_SNAPSHOT_LEN", 1600)},
 		SNMPTrap:        SNMPTrapConfig{Enabled: getEnvAsBool("SNMP_TRAP_ENABLED", false), BindHost: getEnv("SNMP_TRAP_BIND_HOST", "0.0.0.0"), Port: getEnvAsInt("SNMP_TRAP_PORT", 9162), ForwardEnabled: getEnvAsBool("SNMP_TRAP_FORWARD_ENABLED", false), ForwardURL: getEnv("SNMP_TRAP_FORWARD_URL", ""), ForwardToken: getEnv("SNMP_TRAP_FORWARD_TOKEN", ""), ForwardTimeoutSec: getEnvAsInt("SNMP_TRAP_FORWARD_TIMEOUT_SECONDS", 5)},
 		SNMP:            SNMPConfig{Port: getEnvAsInt("SNMP_PORT", 161), TimeoutMS: getEnvAsInt("SNMP_TIMEOUT_MS", 2000), Retries: getEnvAsInt("SNMP_RETRIES", 1), WalkPath: getEnv("SNMP_WALK_PATH", "snmpwalk"), ARPExternalEnabled: getEnvAsBool("SNMP_ARP_EXTERNAL_ENABLED", true)},
-		Radius:          RadiusConfig{GuestVLAN: getEnv("RADIUS_GUEST_VLAN", ""), RegistrationVLAN: getEnv("REGISTRATION_VLAN", getEnv("RADIUS_GUEST_VLAN", "")), QuarantineVLAN: getEnv("RADIUS_QUARANTINE_VLAN", ""), CoAPort: getEnvAsInt("RADIUS_COA_PORT", 3799), CoAClientPath: getEnv("RADIUS_COA_CLIENT_PATH", "radclient")},
+		Radius:          RadiusConfig{GuestVLAN: getEnv("RADIUS_GUEST_VLAN", ""), RegistrationVLAN: getEnv("REGISTRATION_VLAN", getEnv("RADIUS_GUEST_VLAN", "")), QuarantineVLAN: getEnv("RADIUS_QUARANTINE_VLAN", ""), CoAPort: getEnvAsInt("RADIUS_COA_PORT", 3799), CoAClientPath: getEnv("RADIUS_COA_CLIENT_PATH", "radclient"), APIToken: strings.TrimSpace(getEnv("NAC_RADIUS_API_TOKEN", ""))},
 		Identity:        IdentityConfig{LDAPHost: getEnv("LDAP_HOST", ""), LDAPBindDN: getEnv("LDAP_BIND_DN", ""), LDAPBindPassword: getEnv("LDAP_BIND_PASSWORD", ""), LDAPBaseDN: getEnv("LDAP_BASE_DN", ""), LDAPDeviceBaseDN: getEnv("LDAP_DEVICE_BASE_DN", ""), LDAPStaffGID: getEnv("LDAP_STAFF_GID", "501"), LDAPStudentGID: getEnv("LDAP_STUDENT_GID", "500"), LDAPFacultyGID: getEnv("LDAP_FACULTY_GID", "504"), LDAPWhitelistUIDs: getEnvAsCSV("LDAP_WHITELIST_UIDS"), LDAPWhitelistMails: getEnvAsCSV("LDAP_WHITELIST_MAILS"), StaffTargetVLAN: getEnvAsInt("IDENTITY_STAFF_TARGET_VLAN", 0), StudentTargetVLAN: getEnvAsInt("IDENTITY_STUDENT_TARGET_VLAN", 0), FacultyTargetVLAN: getEnvAsInt("IDENTITY_FACULTY_TARGET_VLAN", 0), LDAPVerifyURL: getEnv("IDENTITY_LDAP_VERIFY_URL", ""), StaffVerifyURL: getEnv("IDENTITY_STAFF_VERIFY_URL", ""), StudentVerifyURL: getEnv("IDENTITY_STUDENT_VERIFY_URL", ""), HTTPTimeoutSeconds: getEnvAsInt("IDENTITY_HTTP_TIMEOUT_SECONDS", 5)},
 		Feature:         FeatureConfig{Option82CorrelationEnabled: getEnvAsBool("FEATURE_OPTION82_CORRELATION_ENABLED", false), AutoEnforcementExecution: getEnvAsBool("FEATURE_AUTO_ENFORCEMENT_EXECUTION", false)},
 		PostEnforcement: PostEnforcementConfig{IPLearningEnabled: getEnvAsBool("POST_ENFORCEMENT_IP_LEARNING_ENABLED", false), IPLearningWaitSec: getEnvAsInt("POST_ENFORCEMENT_IP_LEARNING_WAIT_SECONDS", 30), IPRecheckSec: getEnvAsInt("POST_ENFORCEMENT_IP_RECHECK_SECONDS", 10), PortBounceEnabled: getEnvAsBool("POST_ENFORCEMENT_PORT_BOUNCE_ENABLED", false), PortBounceDelaySec: getEnvAsInt("POST_ENFORCEMENT_PORT_BOUNCE_DELAY_SECONDS", 3), MaxMACCountForBounce: getEnvAsInt("POST_ENFORCEMENT_MAX_MAC_COUNT_FOR_BOUNCE", 1)},
@@ -181,6 +182,3 @@ func getEnvAsIntCSV(key string) []int {
 	}
 	return out
 }
-
-
-

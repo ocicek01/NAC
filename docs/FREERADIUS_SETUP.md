@@ -1,211 +1,103 @@
-# FreeRADIUS Setup
+# FreeRADIUS + OpenLDAP secure setup
 
-Bu dokuman NAC ile FreeRADIUS arasindaki calisan entegrasyonun mevcut durumunu ozetler.
+Bu kurulum managed cihazlarda tek gorunur giris icin FreeRADIUS 3.x,
+EAP-TTLS/PAP ve OpenLDAP kullanir. Sophos captive portal BYOD/guest fallback
+olarak kalir; managed 802.1X oturumunda ikinci web login uretilmez.
 
-## Tamamlanan omurga
+## Guvenlik sinirlari
 
-- `POST /api/v1/radius/authorize` endpointi aktif
-- `POST /api/v1/radius/accounting` endpointi aktif
-- `cmd/nac-radius-helper` authorize kararlarini FreeRADIUS `exec` modulu icin reply pair formatinda uretiyor
-- `cmd/nac-radius-clients` NAC envanterindeki switchlerden `clients.conf` snippet uretiyor
-- `radius_events` audit tablosu authorize ve accounting olaylarini sakliyor
-- Per-switch `radius_secret` alani `switches` tablosuna eklendi
-- Cozulen switch/port bilgisi `mac_observations` ve `devices` envanterine `radius / authoritative` olarak yaziliyor
+- Kullanici parolasi yalnizca istemci ile FreeRADIUS arasindaki TLS tunelinde ve
+  FreeRADIUS ile LDAPS bind islemi arasinda bulunur.
+- NAC API parola almaz, saklamaz veya loglamaz.
+- LDAP sunucu sertifikasi kurum CA'si ile zorunlu dogrulanir.
+- Istemci profili RADIUS sunucu sertifikasini ve beklenen sunucu adini zorunlu
+  dogrulamalidir. Kullaniciya sertifika uyarisini gecme secenegi verilmemelidir.
+- NAC HTTP callout sadece `127.0.0.1`/`localhost` hedefini kabul eden helper ile
+  yapilir. Bearer token yalnizca HTTP header'inda tasinir.
+- API hatasi, timeout veya gecersiz karar erisim icin fail-closed sonuc verir.
 
-## NAC endpointleri
+## Akislar
 
-### Authorize
+### Managed kullanici
 
-`POST /api/v1/radius/authorize`
+1. Switch 802.1X baslatir.
+2. FreeRADIUS EAP-TTLS sunucu sertifikasini sunar.
+3. Ic tunelde PAP credential LDAPS bind ile gercekten dogrulanir.
+4. Basarili LDAP dogrulamasindan sonra helper, parolasiz baglami NAC authorize
+   endpointine yollar.
+5. NAC VLAN/policy reply attribute'larini dondurur.
+6. Start/Interim-Update/Stop accounting kayitlari NAC'a gider.
 
-Ornek istek:
+EAP-TLS sertifika altyapisi hazir oldugunda parola kullanmayan tercih edilen
+gelecek secenegidir. OpenLDAP'ta NT hash bulunmadigi durumda PEAP-MSCHAPv2
+uygulanabilir bir varsayim degildir ve bu kurulumda ana yontem olarak kullanilmaz.
 
-```json
-{
-  "username": "00-11-22-33-44-55",
-  "mac_address": "00:11:22:33:44:55",
-  "hostname": "PC-LAB-01",
-  "vendor_class": "MSFT 5.0",
-  "nas_ip_address": "10.6.8.4",
-  "nas_identifier": "sw-10-6-8-4",
-  "nas_port": "38",
-  "nas_port_id": "GigabitEthernet1/0/38",
-  "called_station_id": "",
-  "calling_station_id": "00-11-22-33-44-55"
-}
-```
+### MAB
 
-Ornek yanit:
+MAC formatindaki identity LDAP'a gonderilmez. `nac_mab_authorize` yalnizca cihaz
+politikasini sorar. MAB sonucu insan kullanici kimligi veya Sophos username'i
+olarak yorumlanmaz.
 
-```json
-{
-  "decision": "accept",
-  "policy_action": "unknown",
-  "policy_reason": "RADIUS MAB fallback for missing hostname",
-  "reply_message": "Quarantine access granted",
-  "vlan_id": "999",
-  "reply_attributes": {
-    "Reply-Message": "Quarantine access granted",
-    "Tunnel-Type": "VLAN",
-    "Tunnel-Medium-Type": "IEEE-802",
-    "Tunnel-Private-Group-Id": "999"
-  },
-  "control_attributes": {}
-}
-```
+## Dosyalar ve kurulum
 
-### Accounting
+Drop-in sablonlar [deploy/freeradius/README.md](../deploy/freeradius/README.md)
+altindadir. Sablonlardaki tum `@@...@@` degerleri deployment sirasinda
+secret store veya root-only dosyadan uretilmelidir.
 
-`POST /api/v1/radius/accounting`
-
-Ornek istek:
-
-```json
-{
-  "username": "00-11-22-33-44-55",
-  "mac_address": "00:11:22:33:44:55",
-  "nas_ip_address": "10.6.8.4",
-  "nas_identifier": "sw-10-6-8-4",
-  "nas_port": "38",
-  "nas_port_id": "GigabitEthernet1/0/38",
-  "nas_port_type": "Ethernet",
-  "called_station_id": "",
-  "calling_station_id": "00-11-22-33-44-55",
-  "acct_status_type": "Start",
-  "acct_session_id": "abc123",
-  "framed_ip_address": "10.10.10.25",
-  "session_time": "0",
-  "terminate_cause": ""
-}
-```
-
-Ornek yanit:
-
-```json
-{
-  "status": "ok"
-}
-```
-
-## Policy mapping
-
-- `blocked` -> `reject`
-- `guest` -> `accept + guest VLAN`
-- `unknown` -> `accept + quarantine VLAN` varsa, yoksa `reject`
-- `observed` -> `accept`
-- `active` -> `accept`
-
-Not:
-
-- MAB akisinda hostname cogu zaman bos geldigi icin `Hostname Missing -> observed` sonucu authorize servisinde `unknown`a dusurulur.
-- Bu sayede quarantine VLAN yolu bos hostname yuzunden bypass edilmez.
-
-## Ortam degiskenleri
-
-NAC API sunucusunda:
-
-- `RADIUS_GUEST_VLAN`
-- `RADIUS_QUARANTINE_VLAN`
-
-## Helper binary
-
-`cmd/nac-radius-helper`
-
-Bu helper NAC API endpointine istek atar ve reply attribute satirlari uretir.
-
-Ornek:
+Helper build:
 
 ```bash
-export NAC_RADIUS_API_URL="http://127.0.0.1:8080/api/v1/radius/authorize"
-./nac-radius-helper \
-  --mac "00:11:22:33:44:55" \
-  --hostname "PC-LAB-01" \
-  --nas-ip "10.6.8.4" \
-  --nas-identifier "sw-10-6-8-4" \
-  --nas-port "38" \
-  --nas-port-id "GigabitEthernet1/0/38" \
-  --calling-station-id "00-11-22-33-44-55"
+cd /opt/nac
+go build -o /usr/local/libexec/nac-radius-helper ./cmd/nac-radius-helper
+chown root:root /usr/local/libexec/nac-radius-helper
+chmod 0755 /usr/local/libexec/nac-radius-helper
 ```
 
-Ornek cikti:
-
-```text
-Reply-Message := "Access granted"
-```
-
-## Client generator
-
-`cmd/nac-radius-clients`
-
-Bu arac `switches` tablosundaki switchlerden FreeRADIUS `client {}` bloklari uretir.
-
-Kurallar:
-
-- `switches.radius_secret` doluysa o secret kullanilir
-- bos ise `--secret` ile verilen fallback kullanilir
-- `--require-switch-secret` verilirse fallback'e izin verilmez
-
-Mevcut switch kayitlari icin secret guncelleme endpointi:
-
-`POST /api/v1/switches/radius-secret`
-
-```json
-{
-  "id": "switch-uuid",
-  "radius_secret": "super-secret-value"
-}
-```
-
-Ornek:
+Ortam dosyasi:
 
 ```bash
-set -a
-source .env
-set +a
-./bin/nac-radius-clients --secret 'testing123' --output /etc/freeradius/3.0/clients.d/nac-switches.conf
+install -d -m 0750 -o root -g freerad /etc/nac
+install -m 0640 -o root -g freerad deploy/freeradius/radius-helper.env.example /etc/nac/radius-helper.env
 ```
 
-`clients.conf` icine include:
+`NAC_RADIUS_API_TOKEN` uzun ve rastgele olmalidir. Degisken bos birakildiginda
+eski kurulumlar icin endpointler tokensiz calismaya devam eder; bu yalnizca
+gecis uyumlulugudur. Production'da ayni token hem `nac-api.service` hem
+FreeRADIUS environment dosyasinda mutlaka tanimli olmalidir.
 
-```conf
-$INCLUDE clients.d/nac-switches.conf
+Sablonlari render ettikten sonra:
+
+```bash
+ln -s ../mods-available/nac_ldap /etc/freeradius/3.0/mods-enabled/nac_ldap
+ln -s ../mods-available/nac_eap /etc/freeradius/3.0/mods-enabled/nac_eap
+ln -s ../mods-available/nac_helper /etc/freeradius/3.0/mods-enabled/nac_helper
+ln -s ../sites-available/nac /etc/freeradius/3.0/sites-enabled/nac
+ln -s ../sites-available/nac-inner-tunnel /etc/freeradius/3.0/sites-enabled/nac-inner-tunnel
+freeradius -XC
 ```
 
-## FreeRADIUS `exec` modu
+## Accounting kontrati
 
-Bu repoda ilk asamada `exec` tabanli entegrasyon calistirildi.
+Helper su alanlari `/api/v1/radius/accounting` endpointine iletir:
 
-- `mods-available/nac-helper`
-- `mods-enabled/nac-helper`
-- `sites-enabled/default` icinde `authorize { ... nac_helper ... }`
-- `authenticate { Auth-Type Accept { ok } }`
+- `username`, `mac_address`, `nas_ip_address`, `nas_identifier`
+- `nas_port`, `nas_port_id`, `nas_port_type`
+- `acct_status_type`, `acct_session_id`, `framed_ip_address`
+- `session_time`, `terminate_cause`
+- `event_timestamp`, `acct_delay_time`
 
-## Canli dogrulanan senaryolar
+Accounting kaydi daha sonraki Sophos RADIUS SSO relay icin kaynak olacaktir.
+Bu faz Sophos'a veri gondermez.
 
-- `LAB-PC-01` benzeri known hostname -> `Access-Accept`
-- Bos hostname MAB cihazi -> `Access-Accept + VLAN 999`
-- Gecici blocked test -> `Access-Reject`
-- `radius_events` tablosuna authorize audit kaydi yazildi
+## Dogrulama
 
-## Accounting audit
+```bash
+go test ./cmd/nac-radius-helper
+go build ./cmd/nac-radius-helper
+freeradius -XC
+```
 
-`radius_events` artik iki tur olay tutar:
-
-- `event_type = authorize`
-- `event_type = accounting`
-
-Accounting icin saklanan ek alanlar:
-
-- `username`
-- `nas_port_type`
-- `acct_status_type`
-- `acct_session_id`
-- `framed_ip_address`
-- `session_time`
-- `terminate_cause`
-
-## Sonraki isler
-
-- Per-switch secret rotasyonu ve panel/API yonetimi
-- FreeRADIUS `rlm_rest` varyantini eklemek
-- CoA ve tam accounting/session korelasyonunu baglamak
+Saha testinde sirayla MAB bilinmeyen cihaz, gecersiz LDAP parolasi, gecerli
+TTLS/PAP kullanicisi, LDAP kapali senaryo ve Start/Interim/Stop accounting
+paketleri kontrol edilmelidir. LDAP veya NAC kapaliyken managed kullaniciya
+Access-Accept donmemelidir.

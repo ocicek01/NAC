@@ -1,0 +1,26 @@
+server nac-inner-tunnel {
+	authorize {
+		filter_username
+		pap
+		nac_ldap
+		if ((ok || updated) && &User-Password) {
+			update control {
+				Auth-Type := LDAP
+			}
+		}
+	}
+
+	authenticate {
+		Auth-Type LDAP {
+			nac_ldap
+		}
+	}
+
+	post-auth {
+		# LDAP has already verified the password. NAC only returns network policy.
+		nac_user_authorize
+		if (reject || fail) {
+			reject
+		}
+	}
+}
