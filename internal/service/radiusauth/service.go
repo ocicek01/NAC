@@ -19,6 +19,7 @@ import (
 	domain "nac/internal/domain/radiusauth"
 	radiusevent "nac/internal/domain/radiusevent"
 	sessiondomain "nac/internal/domain/session"
+	sophosssodomain "nac/internal/domain/sophossso"
 	switchasset "nac/internal/domain/switchasset"
 	"nac/internal/normalize"
 	deviceservice "nac/internal/service/device"
@@ -55,6 +56,10 @@ type SessionRecorder interface {
 	PromoteToAccountingKey(ctx context.Context, oldKey, newKey, acctSessionID string) error
 }
 
+type SophosAccountingEnqueuer interface {
+	EnqueueAccounting(ctx context.Context, input sophosssodomain.AccountingInput) error
+}
+
 type Service struct {
 	policies     PolicyEvaluator
 	config       config.RadiusConfig
@@ -63,7 +68,12 @@ type Service struct {
 	switches     SwitchResolver
 	devices      DeviceInventoryUpdater
 	sessions     SessionRecorder
+	sophosSSO    SophosAccountingEnqueuer
 	now          func() time.Time
+}
+
+func (s *Service) ConfigureSophosSSO(enqueuer SophosAccountingEnqueuer) {
+	s.sophosSSO = enqueuer
 }
 
 func NewService(policies PolicyEvaluator, cfg config.RadiusConfig, events radiusevent.Repository, observations ObservationRecorder, switches SwitchResolver, devices DeviceInventoryUpdater, sessions SessionRecorder) *Service {
@@ -201,15 +211,37 @@ func (s *Service) Accounting(ctx context.Context, req domain.AccountingRequest) 
 		return domain.AccountingResponse{}, fmt.Errorf("unknown radius accounting claim result %q", claim)
 	}
 
+	var effectiveSession *sessiondomain.Session
 	if status != "Accounting-On" && status != "Accounting-Off" {
-		applied, err := s.syncAccountingSession(ctx, req, eventAt)
+		storedSession, applied, err := s.syncAccountingSession(ctx, req, eventAt)
 		if err != nil {
 			return domain.AccountingResponse{}, s.failAccounting(ctx, event.ID, claimedAt, err)
 		}
+		effectiveSession = storedSession
 		if applied {
 			if err := s.syncAccountingInventory(ctx, req, eventAt); err != nil {
 				return domain.AccountingResponse{}, s.failAccounting(ctx, event.ID, claimedAt, err)
 			}
+		}
+	}
+	if s.sophosSSO != nil && status != "Accounting-On" && status != "Accounting-Off" {
+		effectiveIP := strings.TrimSpace(req.FramedIPAddress)
+		if effectiveIP == "" && effectiveSession != nil {
+			effectiveIP = strings.TrimSpace(effectiveSession.IPAddress)
+		}
+		enqueueCtx, enqueueCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		defer enqueueCancel()
+		if err := s.sophosSSO.EnqueueAccounting(enqueueCtx, sophosssodomain.AccountingInput{
+			SourceEventID:  event.ID,
+			Username:       req.Username,
+			IPAddress:      effectiveIP,
+			MACAddress:     req.MACAddress,
+			AcctStatusType: status,
+			AcctSessionID:  req.AcctSessionID,
+			EventTimestamp: eventAt,
+			AcctDelayTime:  req.AcctDelayTime,
+		}); err != nil {
+			return domain.AccountingResponse{}, s.failAccounting(ctx, event.ID, claimedAt, fmt.Errorf("enqueue Sophos RADIUS SSO accounting: %w", err))
 		}
 	}
 	finalizeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
@@ -448,14 +480,14 @@ func (s *Service) syncAuthorizeSession(ctx context.Context, req domain.Authorize
 	}
 }
 
-func (s *Service) syncAccountingSession(ctx context.Context, req domain.AccountingRequest, eventAt time.Time) (bool, error) {
+func (s *Service) syncAccountingSession(ctx context.Context, req domain.AccountingRequest, eventAt time.Time) (*sessiondomain.Session, bool, error) {
 	if s.sessions == nil {
-		return false, errors.New("radius session repository is not configured")
+		return nil, false, errors.New("radius session repository is not configured")
 	}
 
 	switchAsset, err := s.resolveAccountingSwitch(ctx, req.NASIPAddress, req.NASIdentifier)
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
 
 	now := eventAt
@@ -466,14 +498,14 @@ func (s *Service) syncAccountingSession(ctx context.Context, req domain.Accounti
 		acctKey := buildAccountingSessionKey(req.MACAddress, switchAsset.ID, acctSessionID)
 		existingByAcct, err := s.sessions.FindByAcctSession(ctx, req.MACAddress, switchAsset.ID, acctSessionID)
 		if err != nil {
-			return false, fmt.Errorf("find radius accounting session: %w", err)
+			return nil, false, fmt.Errorf("find radius accounting session: %w", err)
 		} else if existingByAcct != nil {
 			activeKey = existingByAcct.ActiveKey
 			if !existingByAcct.LastSeenAt.IsZero() && eventAt.Before(existingByAcct.LastSeenAt) {
-				return false, nil
+				return existingByAcct, false, nil
 			}
 		} else if err := s.sessions.PromoteToAccountingKey(ctx, portKey, acctKey, acctSessionID); err != nil {
-			return false, fmt.Errorf("promote radius accounting session key: %w", err)
+			return nil, false, fmt.Errorf("promote radius accounting session key: %w", err)
 		} else {
 			activeKey = acctKey
 		}
@@ -508,10 +540,11 @@ func (s *Service) syncAccountingSession(ctx context.Context, req domain.Accounti
 		session.EndedAt = &now
 	}
 
-	if _, err := s.sessions.Upsert(ctx, session); err != nil {
-		return false, fmt.Errorf("upsert radius accounting session: %w", err)
+	stored, err := s.sessions.Upsert(ctx, session)
+	if err != nil {
+		return nil, false, fmt.Errorf("upsert radius accounting session: %w", err)
 	}
-	return true, nil
+	return &stored, true, nil
 }
 
 func (s *Service) resolveAccountingSwitch(ctx context.Context, nasIPAddress, nasIdentifier string) (*switchasset.Switch, error) {

@@ -12,6 +12,7 @@ import (
 	domain "nac/internal/domain/radiusauth"
 	"nac/internal/domain/radiusevent"
 	"nac/internal/domain/session"
+	"nac/internal/domain/sophossso"
 	"nac/internal/domain/switchasset"
 	deviceservice "nac/internal/service/device"
 )
@@ -85,6 +86,9 @@ func (s *accountingSessionStore) Upsert(_ context.Context, item session.Session)
 	}
 	if current, exists := s.items[item.ActiveKey]; exists {
 		item.ID = current.ID
+		if item.IPAddress == "" {
+			item.IPAddress = current.IPAddress
+		}
 		if item.StartedAt.IsZero() {
 			item.StartedAt = current.StartedAt
 		}
@@ -133,6 +137,21 @@ func (s *countingObservationStore) Insert(_ context.Context, item macobservation
 type countingDeviceUpdater struct {
 	calls    int
 	failOnce bool
+}
+
+type accountingEnqueuer struct {
+	inputs   []sophossso.AccountingInput
+	err      error
+	failOnce bool
+}
+
+func (e *accountingEnqueuer) EnqueueAccounting(_ context.Context, input sophossso.AccountingInput) error {
+	e.inputs = append(e.inputs, input)
+	if e.failOnce {
+		e.failOnce = false
+		return e.err
+	}
+	return e.err
 }
 
 func (s *countingDeviceUpdater) UpsertFromRadius(context.Context, deviceservice.RadiusInventoryInput) error {
@@ -201,6 +220,46 @@ func TestAccountingStartInterimStopUpdatesOneSession(t *testing.T) {
 	}
 	if len(events.items) != 3 {
 		t.Fatalf("event count = %d, want 3", len(events.items))
+	}
+}
+
+func TestAccountingRetriesWhenSophosEnqueueFails(t *testing.T) {
+	events := &accountingEventStore{}
+	service := newAccountingService(events, &accountingSessionStore{})
+	enqueuer := &accountingEnqueuer{err: errors.New("outbox unavailable"), failOnce: true}
+	service.ConfigureSophosSSO(enqueuer)
+	if _, err := service.Accounting(context.Background(), validAccountingRequest("Start")); err == nil {
+		t.Fatal("Accounting() error = nil, want outbox error")
+	}
+	enqueuer.err = nil
+	response, err := service.Accounting(context.Background(), validAccountingRequest("Start"))
+	if err != nil {
+		t.Fatalf("retry Accounting() error = %v", err)
+	}
+	if response.Status != "ok" || len(enqueuer.inputs) != 2 {
+		t.Fatalf("response=%+v enqueue calls=%d", response, len(enqueuer.inputs))
+	}
+	if events.states[accountingEventID(validAccountingRequest("Start"), time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC))] != "processed" {
+		t.Fatal("accounting event was not completed after successful retry")
+	}
+}
+
+func TestAccountingStopWithoutIPUsesPreservedSessionIP(t *testing.T) {
+	service := newAccountingService(&accountingEventStore{}, &accountingSessionStore{})
+	enqueuer := &accountingEnqueuer{}
+	service.ConfigureSophosSSO(enqueuer)
+	if _, err := service.Accounting(context.Background(), validAccountingRequest("Start")); err != nil {
+		t.Fatal(err)
+	}
+	stop := validAccountingRequest("Stop")
+	stop.FramedIPAddress = ""
+	stop.EventTimestamp = "2026-10-13T12:01:00Z"
+	stop.SessionTime = "60"
+	if _, err := service.Accounting(context.Background(), stop); err != nil {
+		t.Fatal(err)
+	}
+	if len(enqueuer.inputs) != 2 || enqueuer.inputs[1].IPAddress != "10.6.9.93" {
+		t.Fatalf("Stop enqueue inputs = %+v", enqueuer.inputs)
 	}
 }
 

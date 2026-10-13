@@ -47,6 +47,7 @@ import (
 	radiuseventrepository "nac/internal/repository/radiusevent"
 	sessionrepository "nac/internal/repository/session"
 	snmptraprepository "nac/internal/repository/snmptrap"
+	sophosssorepository "nac/internal/repository/sophossso"
 	switchrepository "nac/internal/repository/switchasset"
 	switchportrepository "nac/internal/repository/switchport"
 	topologyrepository "nac/internal/repository/topology"
@@ -68,6 +69,7 @@ import (
 	radiusauthservice "nac/internal/service/radiusauth"
 	sessionservice "nac/internal/service/session"
 	snmptrapservice "nac/internal/service/snmptrap"
+	sophosssoservice "nac/internal/service/sophossso"
 	switchservice "nac/internal/service/switchasset"
 	topologyservice "nac/internal/service/topology"
 	trapwindowservice "nac/internal/service/trapwindow"
@@ -84,6 +86,7 @@ type App struct {
 	trapWork        *trapwindowservice.Service
 	deviceWork      *deviceservice.Service
 	enforcementWork *enforcementservice.Service
+	sophosSSOWork   *sophosssoservice.Service
 }
 
 func New(ctx context.Context) (*App, error) {
@@ -166,6 +169,9 @@ func New(ctx context.Context) (*App, error) {
 	)
 	portalRegistrationService := portalservice.NewService(deviceService, ldapResolver, staffResolver, studentResolver, guestIdentityService, parseVLANID(cfg.Radius.GuestVLAN))
 	radiusService := radiusauthservice.NewService(policyEngineService, cfg.Radius, radiusEventRepository, macObservationRepository, switchRepository, deviceService, radiusSessionRepository)
+	sophosSSORepository := sophosssorepository.NewPostgresRepository(postgresPool)
+	sophosSSOService := sophosssoservice.NewService(cfg.SophosSSO, sophosSSORepository, auditService)
+	radiusService.ConfigureSophosSSO(sophosSSOService)
 	macCorrelationService := maccorrelationservice.NewService(
 		logger,
 		macLookupService,
@@ -181,7 +187,7 @@ func New(ctx context.Context) (*App, error) {
 	trapForwarder := snmptrapservice.NewHTTPPortStatusForwarder(cfg.SNMPTrap.ForwardEnabled, cfg.SNMPTrap.ForwardURL, cfg.SNMPTrap.ForwardToken, time.Duration(cfg.SNMPTrap.ForwardTimeoutSec)*time.Second)
 	snmpTrapService := snmptrapservice.NewService(logger, snmpTrapRepository, switchRepository, switchPortRepository, trapWindowService, trapForwarder)
 
-	server := httpserver.New(cfg.App.Port, logger, dhcpEventService, switchAssetService, portEndpointService, macLookupService, macObservationService, topologyService, discoveryJobService, deviceService, guestIdentityService, portalRegistrationService, radiusSessionService, policyEngineService, enforcementEngineService, radiusService, cfg.Radius.APIToken, portEventService, auditService)
+	server := httpserver.New(cfg.App.Port, logger, dhcpEventService, switchAssetService, portEndpointService, macLookupService, macObservationService, topologyService, discoveryJobService, deviceService, guestIdentityService, portalRegistrationService, radiusSessionService, policyEngineService, enforcementEngineService, radiusService, cfg.Radius.APIToken, portEventService, auditService, sophosSSOService)
 	collector := dhcpcollector.New(cfg.DHCP, logger, dhcpEventService)
 	trapCollector := snmptrapcollector.New(cfg.SNMPTrap, logger, snmpTrapService)
 
@@ -195,6 +201,7 @@ func New(ctx context.Context) (*App, error) {
 		trapWork:        trapWindowService,
 		deviceWork:      deviceService,
 		enforcementWork: enforcementEngineService,
+		sophosSSOWork:   sophosSSOService,
 	}, nil
 }
 
@@ -261,6 +268,26 @@ func (a *App) Run(ctx context.Context) error {
 				case <-ticker.C:
 					if err := a.enforcementWork.ProcessDueRequests(ctx, a.config.Enforcement.WorkerBatchSize); err != nil {
 						a.logger.Warn("enforcement worker failed", "error", err)
+					}
+				}
+			}
+		}()
+	}
+	if a.sophosSSOWork != nil && a.sophosSSOWork.Enabled() {
+		go func() {
+			interval := a.sophosSSOWork.WorkerInterval()
+			if interval <= 0 {
+				interval = 2 * time.Second
+			}
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if err := a.sophosSSOWork.ProcessDue(ctx); err != nil {
+						a.logger.Warn("Sophos RADIUS SSO worker cycle failed", "error", err)
 					}
 				}
 			}

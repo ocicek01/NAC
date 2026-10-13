@@ -21,6 +21,7 @@ type Config struct {
 	PostEnforcement PostEnforcementConfig
 	Policy          PolicyConfig
 	Enforcement     EnforcementConfig
+	SophosSSO       SophosSSOConfig
 }
 
 type AppConfig struct{ Name, Env, Port string }
@@ -86,6 +87,19 @@ type EnforcementConfig struct {
 	DefaultRestrictedVLAN int
 	DefaultQuarantineVLAN int
 }
+type SophosSSOConfig struct {
+	Enabled               bool
+	Host                  string
+	Port                  int
+	Secret                string
+	NASIdentifier         string
+	TimeoutSeconds        int
+	WorkerIntervalSeconds int
+	WorkerBatchSize       int
+	MaxRetries            int
+	RetryBaseSeconds      int
+	ClaimLeaseSeconds     int
+}
 type PolicyConfig struct {
 	EnforcementEnabled, DefaultDryRun                                                                                                                                                                                                                                                                                                 bool
 	ThresholdAllow, ThresholdMonitor, ThresholdRestricted, ThresholdRegistration                                                                                                                                                                                                                                                      int
@@ -107,9 +121,16 @@ func Load() (Config, error) {
 		PostEnforcement: PostEnforcementConfig{IPLearningEnabled: getEnvAsBool("POST_ENFORCEMENT_IP_LEARNING_ENABLED", false), IPLearningWaitSec: getEnvAsInt("POST_ENFORCEMENT_IP_LEARNING_WAIT_SECONDS", 30), IPRecheckSec: getEnvAsInt("POST_ENFORCEMENT_IP_RECHECK_SECONDS", 10), PortBounceEnabled: getEnvAsBool("POST_ENFORCEMENT_PORT_BOUNCE_ENABLED", false), PortBounceDelaySec: getEnvAsInt("POST_ENFORCEMENT_PORT_BOUNCE_DELAY_SECONDS", 3), MaxMACCountForBounce: getEnvAsInt("POST_ENFORCEMENT_MAX_MAC_COUNT_FOR_BOUNCE", 1)},
 		Policy:          PolicyConfig{EnforcementEnabled: getEnvAsBool("POLICY_ENFORCEMENT_ENABLED", false), DefaultDryRun: getEnvAsBool("POLICY_DEFAULT_DRY_RUN", true), ThresholdAllow: getEnvAsInt("POLICY_THRESHOLD_ALLOW", 80), ThresholdMonitor: getEnvAsInt("POLICY_THRESHOLD_MONITOR", 60), ThresholdRestricted: getEnvAsInt("POLICY_THRESHOLD_RESTRICTED", 40), ThresholdRegistration: getEnvAsInt("POLICY_THRESHOLD_REGISTRATION", 20), TrustBaseScore: getEnvAsInt("POLICY_TRUST_BASE_SCORE", 50), TrustLDAPRegistryMatch: getEnvAsInt("POLICY_TRUST_LDAP_REGISTRY_MATCH", 20), TrustRegisteredOwner: getEnvAsInt("POLICY_TRUST_REGISTERED_OWNER", 10), TrustKnownDeviceType: getEnvAsInt("POLICY_TRUST_KNOWN_DEVICE_TYPE", 10), TrustDepartmentPresent: getEnvAsInt("POLICY_TRUST_DEPARTMENT_PRESENT", 5), TrustDefaultVLANPresent: getEnvAsInt("POLICY_TRUST_DEFAULT_VLAN_PRESENT", 5), TrustStableAttachment: getEnvAsInt("POLICY_TRUST_STABLE_ATTACHMENT", 10), TrustLDAPNotFound: getEnvAsInt("POLICY_TRUST_LDAP_NOT_FOUND", -15), TrustUnknownDeviceType: getEnvAsInt("POLICY_TRUST_UNKNOWN_DEVICE_TYPE", -10), TrustRapidPortMovement: getEnvAsInt("POLICY_TRUST_RAPID_PORT_MOVEMENT", -20), TrustPreviousQuarantine: getEnvAsInt("POLICY_TRUST_PREVIOUS_QUARANTINE", -20), TrustIPMACAnomaly: getEnvAsInt("POLICY_TRUST_IP_MAC_ANOMALY", -25), TrustPortProfileMismatch: getEnvAsInt("POLICY_TRUST_PORT_PROFILE_MISMATCH", -15), TrustRepeatedEnrichmentError: getEnvAsInt("POLICY_TRUST_REPEATED_ENRICHMENT_ERROR", -10)},
 		Enforcement:     EnforcementConfig{Mode: getEnv("ENFORCEMENT_MODE", "dry_run"), AllowedActions: getEnvAsCSV("ENFORCEMENT_ALLOWED_ACTIONS"), AllowedSwitches: getEnvAsCSV("ENFORCEMENT_ALLOWED_SWITCHES"), AllowedPorts: getEnvAsCSV("ENFORCEMENT_ALLOWED_PORTS"), AllowedVLANs: getEnvAsIntCSV("ENFORCEMENT_ALLOWED_VLANS"), AllowedDeviceIDs: getEnvAsCSV("ENFORCEMENT_ALLOWED_DEVICE_IDS"), AllowedMACs: getEnvAsCSV("ENFORCEMENT_ALLOWED_MACS"), MaxRetries: getEnvAsInt("ENFORCEMENT_MAX_RETRIES", 3), AutoRollback: getEnvAsBool("ENFORCEMENT_AUTO_ROLLBACK", false), WorkerBatchSize: getEnvAsInt("ENFORCEMENT_WORKER_BATCH_SIZE", 20), RetryBackoffSeconds: getEnvAsInt("ENFORCEMENT_RETRY_BACKOFF_SECONDS", 30), RetryBaseSeconds: getEnvAsInt("ENFORCEMENT_RETRY_BASE_SECONDS", getEnvAsInt("ENFORCEMENT_RETRY_BACKOFF_SECONDS", 30)), RequestTimeoutSeconds: getEnvAsInt("ENFORCEMENT_REQUEST_TIMEOUT_SECONDS", 15), StaleRunningSeconds: getEnvAsInt("ENFORCEMENT_STALE_RUNNING_SECONDS", 300), AdapterPriority: getEnvAsCSV("ENFORCEMENT_ADAPTER_PRIORITY"), MockAdapterEnabled: getEnvAsBool("ENFORCEMENT_MOCK_ADAPTER_ENABLED", false), DefaultRestrictedVLAN: getEnvAsInt("ENFORCEMENT_DEFAULT_RESTRICTED_VLAN", 0), DefaultQuarantineVLAN: getEnvAsInt("ENFORCEMENT_DEFAULT_QUARANTINE_VLAN", 0)},
+		SophosSSO:       SophosSSOConfig{Enabled: getEnvAsBool("SOPHOS_RADIUS_SSO_ENABLED", false), Host: strings.TrimSpace(getEnv("SOPHOS_RADIUS_SSO_HOST", "")), Port: getEnvAsInt("SOPHOS_RADIUS_SSO_PORT", 1813), Secret: getEnv("SOPHOS_RADIUS_SSO_SECRET", ""), NASIdentifier: strings.TrimSpace(getEnv("SOPHOS_RADIUS_SSO_NAS_IDENTIFIER", "nac")), TimeoutSeconds: getEnvAsInt("SOPHOS_RADIUS_SSO_TIMEOUT_SECONDS", 3), WorkerIntervalSeconds: getEnvAsInt("SOPHOS_RADIUS_SSO_WORKER_INTERVAL_SECONDS", 2), WorkerBatchSize: getEnvAsInt("SOPHOS_RADIUS_SSO_WORKER_BATCH_SIZE", 20), MaxRetries: getEnvAsInt("SOPHOS_RADIUS_SSO_MAX_RETRIES", 5), RetryBaseSeconds: getEnvAsInt("SOPHOS_RADIUS_SSO_RETRY_BASE_SECONDS", 5), ClaimLeaseSeconds: getEnvAsInt("SOPHOS_RADIUS_SSO_CLAIM_LEASE_SECONDS", 60)},
 	}
 	if cfg.Postgres.Database == "" || cfg.Postgres.User == "" {
 		return Config{}, fmt.Errorf("postgres configuration is incomplete")
+	}
+	if cfg.SophosSSO.Enabled && (cfg.SophosSSO.Host == "" || cfg.SophosSSO.Secret == "") {
+		return Config{}, fmt.Errorf("Sophos RADIUS SSO host and secret are required when enabled")
+	}
+	if cfg.SophosSSO.Enabled && (cfg.SophosSSO.Port < 1 || cfg.SophosSSO.Port > 65535 || cfg.SophosSSO.TimeoutSeconds < 1 || cfg.SophosSSO.WorkerIntervalSeconds < 1 || cfg.SophosSSO.WorkerBatchSize < 1 || cfg.SophosSSO.WorkerBatchSize > 200 || cfg.SophosSSO.MaxRetries < 1 || cfg.SophosSSO.RetryBaseSeconds < 1 || cfg.SophosSSO.ClaimLeaseSeconds < 1) {
+		return Config{}, fmt.Errorf("Sophos RADIUS SSO numeric configuration is invalid")
 	}
 	return cfg, nil
 }
