@@ -127,8 +127,16 @@ func (c *stubSNMPClient) GetBaseMAC(context.Context, snmp.SwitchTarget) (string,
 	return "", nil
 }
 
+func (c *stubSNMPClient) GetInt(context.Context, snmp.SwitchTarget, string) (int, error) {
+	return 0, nil
+}
+
 func (c *stubSNMPClient) ResolveBridgePort(context.Context, snmp.SwitchTarget, int) (snmp.LookupResult, error) {
 	return snmp.LookupResult{}, nil
+}
+
+func (c *stubSNMPClient) FindBridgePortByIfIndex(_ context.Context, _ snmp.SwitchTarget, ifIndex int) (int, error) {
+	return ifIndex, nil
 }
 
 func (c *stubSNMPClient) DiscoverLLDPNeighbors(context.Context, snmp.SwitchTarget) ([]snmp.LLDPNeighbor, error) {

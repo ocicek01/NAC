@@ -149,6 +149,30 @@ func (r *stubPortRepository) FindBySwitchIfIndex(context.Context, string, int) (
 	return nil, nil
 }
 
+func (r *stubPortRepository) UpdateStatus(_ context.Context, switchID string, ifIndex int, interfaceName, interfaceDescription, adminStatus, operStatus string, observedAt time.Time) (*switchport.Port, error) {
+	return &switchport.Port{
+		SwitchID:             switchID,
+		IfIndex:              ifIndex,
+		InterfaceName:        interfaceName,
+		InterfaceDescription: interfaceDescription,
+		AdminStatus:          adminStatus,
+		OperStatus:           operStatus,
+		LastDiscoveredAt:     observedAt,
+	}, nil
+}
+
+func (r *stubPortRepository) UpdateFDBSnapshot(_ context.Context, switchID string, ifIndex int, interfaceName, interfaceDescription string, macAddresses []string, observedAt time.Time) (*switchport.Port, error) {
+	return &switchport.Port{
+		SwitchID:             switchID,
+		IfIndex:              ifIndex,
+		InterfaceName:        interfaceName,
+		InterfaceDescription: interfaceDescription,
+		MACAddresses:         append([]string{}, macAddresses...),
+		MACCount:             len(macAddresses),
+		LastDiscoveredAt:     observedAt,
+	}, nil
+}
+
 type stubARPSnapshotRepository struct {
 	items []arpsnapshot.Snapshot
 }
@@ -165,6 +189,16 @@ type stubMACIPBindingRepository struct {
 func (r *stubMACIPBindingRepository) UpsertBatch(_ context.Context, items []macipbinding.Binding) error {
 	r.items = append([]macipbinding.Binding{}, items...)
 	return nil
+}
+
+func (r *stubMACIPBindingRepository) FindLatestByMACSwitch(_ context.Context, macAddress, switchID string) (*macipbinding.Binding, error) {
+	for index := len(r.items) - 1; index >= 0; index-- {
+		item := r.items[index]
+		if item.MACAddress == macAddress && item.SwitchID == switchID {
+			return &item, nil
+		}
+	}
+	return nil, nil
 }
 
 type stubSNMPClient struct{}
@@ -189,8 +223,16 @@ func (c *stubSNMPClient) GetBaseMAC(context.Context, snmp.SwitchTarget) (string,
 	return "", nil
 }
 
+func (c *stubSNMPClient) GetInt(context.Context, snmp.SwitchTarget, string) (int, error) {
+	return 0, nil
+}
+
 func (c *stubSNMPClient) ResolveBridgePort(context.Context, snmp.SwitchTarget, int) (snmp.LookupResult, error) {
 	return snmp.LookupResult{}, nil
+}
+
+func (c *stubSNMPClient) FindBridgePortByIfIndex(_ context.Context, _ snmp.SwitchTarget, ifIndex int) (int, error) {
+	return ifIndex, nil
 }
 
 func (c *stubSNMPClient) DiscoverLLDPNeighbors(context.Context, snmp.SwitchTarget) ([]snmp.LLDPNeighbor, error) {
