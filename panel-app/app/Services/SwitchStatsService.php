@@ -187,11 +187,12 @@ class SwitchStatsService
         $location = $port->currentLocation;
         $endpoint = $location?->endpoint;
         $goPort = $this->goPortForLocalPort($port, $goPorts);
-        if (! $this->endpointMatchesObservedPort($endpoint, $goPort)) {
+        $isInfrastructurePort = $this->isInfrastructurePort($goPort);
+        if ($isInfrastructurePort || ! $this->endpointMatchesObservedPort($endpoint, $goPort)) {
             $location = null;
             $endpoint = null;
         }
-        $goDevice = $this->goDeviceForLocalPort($port, $goDevices, $goPort);
+        $goDevice = $isInfrastructurePort ? null : $this->goDeviceForLocalPort($port, $goDevices, $goPort);
         $state = $this->portVisualState($port, $endpoint?->status, $goPort, $goDevice);
         $policy = $this->firstFilledValue(
             $endpoint?->policy_name,
@@ -225,7 +226,7 @@ class SwitchStatsService
         $macAddress = $this->firstFilledValue(
             $endpoint?->mac_address,
             $goDevice['mac_address'] ?? null,
-            $this->firstMACAddressFromPort($goPort)
+            $isInfrastructurePort ? null : $this->firstMACAddressFromPort($goPort)
         ) ?? '-';
         $ipAddress = $this->displayIPAddress($this->firstFilledValue(
             $endpoint?->ip_address,

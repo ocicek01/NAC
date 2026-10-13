@@ -236,6 +236,29 @@ class SwitchStatsServiceTest extends TestCase
         $this->assertFalse($service->isInfrastructure(['mac_count' => 1]));
     }
 
+    public function test_uplink_payload_does_not_present_one_mac_as_connected_endpoint(): void
+    {
+        $goPorts = [
+            'port-index:47' => [
+                'port_index' => 47,
+                'is_uplink' => true,
+                'mac_count' => 2,
+                'mac_addresses' => ['AA:BB:CC:DD:EE:01', 'AA:BB:CC:DD:EE:02'],
+            ],
+        ];
+        $service = new SwitchStatsServiceTestDouble([], $goPorts);
+        $port = $this->makePort('47', 47, 'access');
+        $port->setRelation('switch', new NetworkSwitch(['model' => 'HP J9775A 2530-48G']));
+
+        $payload = $service->portPayload($port, [], $goPorts);
+
+        $this->assertTrue($payload['isUplink']);
+        $this->assertSame(2, $payload['macCount']);
+        $this->assertSame('-', $payload['mac']);
+        $this->assertSame('-', $payload['ip']);
+        $this->assertSame('-', $payload['user']);
+    }
+
     public function test_detail_resolves_go_switch_id_by_hostname_when_local_id_differs(): void
     {
         $switch = new NetworkSwitch([
