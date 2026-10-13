@@ -36,7 +36,7 @@ func shouldPublishMACDeltas(missing bool, classification portClassification) boo
 	if missing || classification.Uplink || classification.Trunk {
 		return false
 	}
-	return !strings.EqualFold(strings.TrimSpace(classification.Mode), "trunk")
+	return strings.EqualFold(strings.TrimSpace(classification.Mode), "access")
 }
 
 func mergeObservation(previous observationState, item snmp.PortObservation) observationState {

@@ -60,6 +60,7 @@ func TestShouldPublishMACDeltasOnlyForEstablishedAccessPorts(t *testing.T) {
 		{name: "uplink flag", classification: portClassification{Uplink: true, Mode: "access"}},
 		{name: "trunk flag", classification: portClassification{Trunk: true}},
 		{name: "trunk mode", classification: portClassification{Mode: "TrUnK"}},
+		{name: "unknown mode", classification: portClassification{Mode: "unknown"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
