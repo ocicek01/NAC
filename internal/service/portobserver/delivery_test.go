@@ -12,13 +12,16 @@ import (
 
 func TestHTTPDelivererClassifiesPermanentAndRetryableResponses(t *testing.T) {
 	status := http.StatusBadRequest
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(status) }))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte("validation failed"))
+	}))
 	defer server.Close()
 	deliverer := NewHTTPDeliverer(server.URL)
 
 	err := deliverer.Deliver(context.Background(), porteventdomain.Event{})
 	var deliveryErr *DeliveryError
-	if !errors.As(err, &deliveryErr) || !deliveryErr.Permanent {
+	if !errors.As(err, &deliveryErr) || !deliveryErr.Permanent || deliveryErr.Message != "validation failed" {
 		t.Fatalf("400 must be permanent: %v", err)
 	}
 	status = http.StatusConflict

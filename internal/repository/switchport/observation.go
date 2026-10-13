@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -23,6 +24,19 @@ type observationState struct {
 	Oper  string   `json:"oper_status"`
 	VLAN  int      `json:"vlan_id"`
 	MACs  []string `json:"mac_addresses"`
+}
+
+type portClassification struct {
+	Uplink bool
+	Trunk  bool
+	Mode   string
+}
+
+func shouldPublishMACDeltas(missing bool, classification portClassification) bool {
+	if missing || classification.Uplink || classification.Trunk {
+		return false
+	}
+	return !strings.EqualFold(strings.TrimSpace(classification.Mode), "trunk")
 }
 
 func mergeObservation(previous observationState, item snmp.PortObservation) observationState {
@@ -83,11 +97,14 @@ func (r *PostgresRepository) Observe(ctx context.Context, asset switchasset.Swit
 	changed := 0
 	for _, item := range snapshot.Ports {
 		var previous observationState
+		var classification portClassification
 		var raw []byte
 		var updated time.Time
-		err = tx.QueryRow(ctx, `SELECT admin_status, oper_status, vlan_id, mac_addresses, updated_at
+		err = tx.QueryRow(ctx, `SELECT admin_status, oper_status, vlan_id, mac_addresses, updated_at,
+			is_uplink, is_trunk, port_mode
 		 FROM switch_ports WHERE switch_id=$1 AND if_index=$2 FOR UPDATE`, asset.ID, item.IfIndex).
-			Scan(&previous.Admin, &previous.Oper, &previous.VLAN, &raw, &updated)
+			Scan(&previous.Admin, &previous.Oper, &previous.VLAN, &raw, &updated,
+				&classification.Uplink, &classification.Trunk, &classification.Mode)
 		missing := errors.Is(err, pgx.ErrNoRows)
 		if err != nil && !missing {
 			return 0, err
@@ -139,7 +156,7 @@ func (r *PostgresRepository) Observe(ctx context.Context, asset switchasset.Swit
 		if err = audit.Record(ctx, "port_snapshot_changed", "success", "port_event", event.ID, asset.ID, "", event.Metadata); err != nil {
 			return 0, err
 		}
-		if item.MACsKnown {
+		if item.MACsKnown && shouldPublishMACDeltas(missing, classification) {
 			learned, removed := macDelta(previous.MACs, next.MACs)
 			for _, delta := range []struct {
 				typeName string

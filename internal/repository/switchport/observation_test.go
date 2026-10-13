@@ -47,3 +47,25 @@ func TestMACDeltaDoesNotRepeatStableEntries(t *testing.T) {
 		t.Fatalf("unexpected delta learned=%v removed=%v", learned, removed)
 	}
 }
+
+func TestShouldPublishMACDeltasOnlyForEstablishedAccessPorts(t *testing.T) {
+	tests := []struct {
+		name           string
+		missing        bool
+		classification portClassification
+		want           bool
+	}{
+		{name: "access", classification: portClassification{Mode: "access"}, want: true},
+		{name: "initial baseline", missing: true, classification: portClassification{Mode: "access"}},
+		{name: "uplink flag", classification: portClassification{Uplink: true, Mode: "access"}},
+		{name: "trunk flag", classification: portClassification{Trunk: true}},
+		{name: "trunk mode", classification: portClassification{Mode: "TrUnK"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := shouldPublishMACDeltas(test.missing, test.classification); got != test.want {
+				t.Fatalf("shouldPublishMACDeltas()=%v want=%v", got, test.want)
+			}
+		})
+	}
+}

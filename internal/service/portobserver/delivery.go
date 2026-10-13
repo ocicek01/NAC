@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -21,9 +22,13 @@ type Outbox interface {
 type DeliveryError struct {
 	StatusCode int
 	Permanent  bool
+	Message    string
 }
 
 func (e *DeliveryError) Error() string {
+	if e.Message != "" {
+		return fmt.Sprintf("port event API returned %d: %s", e.StatusCode, e.Message)
+	}
 	return fmt.Sprintf("port event API returned %d", e.StatusCode)
 }
 
@@ -59,7 +64,12 @@ func (d *HTTPDeliverer) Deliver(ctx context.Context, event porteventdomain.Event
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusCreated && response.StatusCode != http.StatusOK {
-		return &DeliveryError{StatusCode: response.StatusCode, Permanent: response.StatusCode >= 400 && response.StatusCode < 500 && response.StatusCode != http.StatusConflict && response.StatusCode != http.StatusTooManyRequests}
+		message, _ := io.ReadAll(io.LimitReader(response.Body, 512))
+		return &DeliveryError{
+			StatusCode: response.StatusCode,
+			Permanent:  response.StatusCode >= 400 && response.StatusCode < 500 && response.StatusCode != http.StatusConflict && response.StatusCode != http.StatusTooManyRequests,
+			Message:    strings.TrimSpace(string(message)),
+		}
 	}
 	return nil
 }

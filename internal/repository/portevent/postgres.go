@@ -97,7 +97,7 @@ func (r *PostgresRepository) BeginIngest(ctx context.Context, id string) (string
 		ON CONFLICT (event_id) DO UPDATE SET
 			status='processing',attempts=port_event_inbox.attempts+1,last_error='',started_at=NOW(),updated_at=NOW()
 		WHERE port_event_inbox.status='failed'
-		RETURNING 'claimed'`).Scan(&status)
+		RETURNING 'claimed'`, id).Scan(&status)
 	if err == nil {
 		return status, nil
 	}
