@@ -187,6 +187,45 @@ class SwitchStatsServiceTest extends TestCase
         $this->assertSame('RADIUS CoA', $payload['enforcementMethod']);
     }
 
+    public function test_port_payload_does_not_mix_stale_endpoint_with_observed_mac(): void
+    {
+        $goPorts = [
+            'port-index:5' => [
+                'port_index' => 5,
+                'interface_name' => '5',
+                'mac_addresses' => ['30:9C:23:9B:97:AA'],
+            ],
+        ];
+        $goDevices = [
+            'port-index:5' => [[
+                'id' => 'observed-device-5',
+                'current_if_index' => 5,
+                'mac_address' => '30:9C:23:9B:97:AA',
+                'current_ip_address' => '10.6.9.93/32',
+                'hostname' => 'omer_cicek',
+                'last_seen_at' => '2026-10-13T12:23:14Z',
+            ]],
+        ];
+
+        $service = new SwitchStatsServiceTestDouble([], $goPorts, [], $goDevices);
+        $port = $this->makePort('5', 5, 'access');
+        $port->setRelation('switch', new NetworkSwitch(['model' => 'HP J9775A 2530-48G']));
+        $staleEndpoint = $port->getRelation('currentLocation')->getRelation('endpoint');
+        $staleEndpoint->forceFill([
+            'mac_address' => '00:08:D1:04:EB:FB',
+            'ip_address' => '10.6.9.205',
+            'hostname' => 'stale-device',
+            'user_name' => 'stale.user',
+        ]);
+
+        $payload = $service->portPayload($port, [], $goPorts, $goDevices);
+
+        $this->assertSame('30:9C:23:9B:97:AA', $payload['mac']);
+        $this->assertSame('10.6.9.93', $payload['ip']);
+        $this->assertSame('omer_cicek', $payload['hostname']);
+        $this->assertSame('-', $payload['user']);
+    }
+
     public function test_detail_resolves_go_switch_id_by_hostname_when_local_id_differs(): void
     {
         $switch = new NetworkSwitch([

@@ -309,7 +309,7 @@ class NacApiTest extends TestCase
         $this->getJson('/api/switch-ports/'.$port->id)
             ->assertOk()
             ->assertJsonPath('data.mac', '30:9C:23:9B:97:AA')
-            ->assertJsonPath('data.ip', '10.6.9.93/32')
+            ->assertJsonPath('data.ip', '10.6.9.93')
             ->assertJsonPath('data.hostname', 'omer_cicek')
             ->assertJsonPath('data.user', 'omer.cicek')
             ->assertJsonPath('data.macCount', 1);

@@ -187,6 +187,10 @@ class SwitchStatsService
         $location = $port->currentLocation;
         $endpoint = $location?->endpoint;
         $goPort = $this->goPortForLocalPort($port, $goPorts);
+        if (! $this->endpointMatchesObservedPort($endpoint, $goPort)) {
+            $location = null;
+            $endpoint = null;
+        }
         $goDevice = $this->goDeviceForLocalPort($port, $goDevices, $goPort);
         $state = $this->portVisualState($port, $endpoint?->status, $goPort, $goDevice);
         $policy = $this->firstFilledValue(
@@ -223,10 +227,10 @@ class SwitchStatsService
             $goDevice['mac_address'] ?? null,
             $this->firstMACAddressFromPort($goPort)
         ) ?? '-';
-        $ipAddress = $this->firstFilledValue(
+        $ipAddress = $this->displayIPAddress($this->firstFilledValue(
             $endpoint?->ip_address,
             $goDevice['current_ip_address'] ?? null
-        ) ?? '-';
+        )) ?? '-';
         $deviceType = $this->firstFilledValue(
             $endpoint?->device_type,
             $goDevice['device_type'] ?? null
@@ -852,6 +856,35 @@ class SwitchStatsService
         }
 
         return null;
+    }
+
+    protected function endpointMatchesObservedPort($endpoint, ?array $goPort): bool
+    {
+        if ($endpoint === null || $goPort === null || ! array_key_exists('mac_addresses', $goPort)) {
+            return true;
+        }
+
+        $endpointMAC = $this->normalizeMACAddress((string) ($endpoint->mac_address ?? ''));
+        if ($endpointMAC === '') {
+            return false;
+        }
+
+        $observedMACs = array_values(array_filter(array_map(
+            fn ($mac) => $this->normalizeMACAddress((string) $mac),
+            is_array($goPort['mac_addresses']) ? $goPort['mac_addresses'] : []
+        )));
+
+        return in_array($endpointMAC, $observedMACs, true);
+    }
+
+    protected function displayIPAddress(?string $ipAddress): ?string
+    {
+        $value = trim((string) $ipAddress);
+        if ($value === '') {
+            return null;
+        }
+
+        return trim(explode('/', $value, 2)[0]);
     }
 
     protected function goDeviceForLocalPort(SwitchPort $port, array $goDevices, ?array $goPort = null): ?array
