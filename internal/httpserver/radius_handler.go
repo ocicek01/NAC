@@ -3,6 +3,7 @@ package httpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	domain "nac/internal/domain/radiusauth"
@@ -54,7 +55,16 @@ func registerRadiusRoutes(mux *http.ServeMux, service radiusService) {
 
 		resp, err := service.Accounting(r.Context(), req)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			var validationErr domain.ValidationError
+			if errors.As(err, &validationErr) {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if errors.Is(err, domain.ErrAccountingInProgress) {
+				http.Error(w, "radius accounting packet is being processed", http.StatusServiceUnavailable)
+				return
+			}
+			http.Error(w, "radius accounting persistence failed", http.StatusInternalServerError)
 			return
 		}
 

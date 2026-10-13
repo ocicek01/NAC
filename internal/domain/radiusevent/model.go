@@ -30,3 +30,11 @@ type Event struct {
 	ControlAttributes string    `json:"control_attributes"`
 	CreatedAt         time.Time `json:"created_at"`
 }
+
+type ClaimResult string
+
+const (
+	Claimed   ClaimResult = "claimed"
+	Duplicate ClaimResult = "duplicate"
+	Busy      ClaimResult = "busy"
+)

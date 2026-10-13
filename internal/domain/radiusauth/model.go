@@ -1,5 +1,21 @@
 package radiusauth
 
+import (
+	"errors"
+	"fmt"
+)
+
+var ErrAccountingInProgress = errors.New("radius accounting packet is already being processed")
+
+type ValidationError struct {
+	Field   string
+	Message string
+}
+
+func (e ValidationError) Error() string {
+	return fmt.Sprintf("%s %s", e.Field, e.Message)
+}
+
 type AuthorizeRequest struct {
 	Username         string `json:"username"`
 	MACAddress       string `json:"mac_address"`
@@ -30,6 +46,8 @@ type AccountingRequest struct {
 	FramedIPAddress  string `json:"framed_ip_address"`
 	SessionTime      string `json:"session_time"`
 	TerminateCause   string `json:"terminate_cause"`
+	EventTimestamp   string `json:"event_timestamp"`
+	AcctDelayTime    int    `json:"acct_delay_time"`
 }
 
 type AuthorizeResponse struct {

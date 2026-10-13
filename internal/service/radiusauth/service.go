@@ -2,8 +2,13 @@ package radiusauth
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
+	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,6 +28,7 @@ import (
 const (
 	sourceTypeRadius        = "radius"
 	confidenceAuthoritative = "authoritative"
+	accountingClaimLease    = 2 * time.Minute
 )
 
 type PolicyEvaluator interface {
@@ -57,6 +63,7 @@ type Service struct {
 	switches     SwitchResolver
 	devices      DeviceInventoryUpdater
 	sessions     SessionRecorder
+	now          func() time.Time
 }
 
 func NewService(policies PolicyEvaluator, cfg config.RadiusConfig, events radiusevent.Repository, observations ObservationRecorder, switches SwitchResolver, devices DeviceInventoryUpdater, sessions SessionRecorder) *Service {
@@ -68,6 +75,7 @@ func NewService(policies PolicyEvaluator, cfg config.RadiusConfig, events radius
 		switches:     switches,
 		devices:      devices,
 		sessions:     sessions,
+		now:          time.Now,
 	}
 }
 
@@ -161,10 +169,54 @@ func (s *Service) Authorize(ctx context.Context, req domain.AuthorizeRequest) (d
 
 func (s *Service) Accounting(ctx context.Context, req domain.AccountingRequest) (domain.AccountingResponse, error) {
 	req.MACAddress = normalizeMACAddress(req.MACAddress, req.CallingStationID, req.Username)
+	status, err := validateAccountingRequest(req)
+	if err != nil {
+		return domain.AccountingResponse{}, err
+	}
+	req.AcctStatusType = status
+	eventAt, err := accountingEventTime(req, s.now().UTC())
+	if err != nil {
+		return domain.AccountingResponse{}, err
+	}
 
-	s.recordAccountingEvent(ctx, req)
-	s.syncAccountingInventory(ctx, req)
-	s.syncAccountingSession(ctx, req)
+	event, err := buildAccountingEvent(req, eventAt)
+	if err != nil {
+		return domain.AccountingResponse{}, err
+	}
+	if s.events == nil {
+		return domain.AccountingResponse{}, errors.New("radius accounting event repository is not configured")
+	}
+	claimedAt := s.now().UTC()
+	claim, err := s.events.ClaimAccounting(ctx, event, claimedAt, claimedAt.Add(-accountingClaimLease))
+	if err != nil {
+		return domain.AccountingResponse{}, fmt.Errorf("claim radius accounting event: %w", err)
+	}
+	switch claim {
+	case radiusevent.Duplicate:
+		return domain.AccountingResponse{Status: "ok"}, nil
+	case radiusevent.Busy:
+		return domain.AccountingResponse{}, domain.ErrAccountingInProgress
+	case radiusevent.Claimed:
+	default:
+		return domain.AccountingResponse{}, fmt.Errorf("unknown radius accounting claim result %q", claim)
+	}
+
+	if status != "Accounting-On" && status != "Accounting-Off" {
+		applied, err := s.syncAccountingSession(ctx, req, eventAt)
+		if err != nil {
+			return domain.AccountingResponse{}, s.failAccounting(ctx, event.ID, claimedAt, err)
+		}
+		if applied {
+			if err := s.syncAccountingInventory(ctx, req, eventAt); err != nil {
+				return domain.AccountingResponse{}, s.failAccounting(ctx, event.ID, claimedAt, err)
+			}
+		}
+	}
+	finalizeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	if err := s.events.CompleteAccounting(finalizeCtx, event.ID, claimedAt, s.now().UTC()); err != nil {
+		return domain.AccountingResponse{}, fmt.Errorf("complete radius accounting event: %w", err)
+	}
 	return domain.AccountingResponse{Status: "ok"}, nil
 }
 
@@ -206,13 +258,17 @@ func (s *Service) recordAuthorizeEvent(ctx context.Context, req domain.Authorize
 	})
 }
 
-func (s *Service) recordAccountingEvent(ctx context.Context, req domain.AccountingRequest) {
-	if s.events == nil {
-		return
+func buildAccountingEvent(req domain.AccountingRequest, eventAt time.Time) (radiusevent.Event, error) {
+	accountingMetadata, err := json.Marshal(map[string]any{
+		"acct_delay_time": req.AcctDelayTime,
+		"event_timestamp": strings.TrimSpace(req.EventTimestamp),
+	})
+	if err != nil {
+		return radiusevent.Event{}, fmt.Errorf("encode radius accounting metadata: %w", err)
 	}
 
-	_, _ = s.events.Insert(ctx, radiusevent.Event{
-		ID:                uuid.NewString(),
+	return radiusevent.Event{
+		ID:                accountingEventID(req, eventAt),
 		EventType:         "accounting",
 		Username:          strings.TrimSpace(req.Username),
 		MACAddress:        strings.TrimSpace(req.MACAddress),
@@ -236,9 +292,18 @@ func (s *Service) recordAccountingEvent(ctx context.Context, req domain.Accounti
 		ReplyMessage:      "",
 		VLANID:            "",
 		ReplyAttributes:   "{}",
-		ControlAttributes: "{}",
-		CreatedAt:         time.Now().UTC(),
-	})
+		ControlAttributes: string(accountingMetadata),
+		CreatedAt:         eventAt,
+	}, nil
+}
+
+func (s *Service) failAccounting(ctx context.Context, eventID string, claimedAt time.Time, processingErr error) error {
+	failCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	if err := s.events.FailAccounting(failCtx, eventID, processingErr.Error(), claimedAt, s.now().UTC()); err != nil {
+		return errors.Join(processingErr, fmt.Errorf("mark radius accounting event failed: %w", err))
+	}
+	return processingErr
 }
 
 func (s *Service) syncAuthorizeInventory(ctx context.Context, req domain.AuthorizeRequest, resp domain.AuthorizeResponse) {
@@ -290,14 +355,12 @@ func (s *Service) syncAuthorizeInventory(ctx context.Context, req domain.Authori
 	}
 }
 
-func (s *Service) syncAccountingInventory(ctx context.Context, req domain.AccountingRequest) {
-	switchAsset, ok := s.resolveSwitch(ctx, req.NASIPAddress, req.NASIdentifier)
-	if !ok {
-		log.Printf("radius accounting inventory sync skipped: switch not resolved nas_ip=%q nas_identifier=%q mac=%q", req.NASIPAddress, req.NASIdentifier, req.MACAddress)
-		return
+func (s *Service) syncAccountingInventory(ctx context.Context, req domain.AccountingRequest, observedAt time.Time) error {
+	switchAsset, err := s.resolveAccountingSwitch(ctx, req.NASIPAddress, req.NASIdentifier)
+	if err != nil {
+		return err
 	}
 
-	observedAt := time.Now().UTC()
 	observation := macobservation.Observation{
 		ID:                   uuid.NewString(),
 		MACAddress:           strings.ToUpper(strings.TrimSpace(req.MACAddress)),
@@ -314,12 +377,6 @@ func (s *Service) syncAccountingInventory(ctx context.Context, req domain.Accoun
 		CreatedAt:            observedAt,
 	}
 
-	if s.observations != nil {
-		if _, err := s.observations.Insert(ctx, observation); err != nil {
-			log.Printf("radius accounting observation insert failed: mac=%q switch=%q err=%v", observation.MACAddress, observation.SwitchName, err)
-		}
-	}
-
 	if s.devices != nil {
 		if err := s.devices.UpsertFromRadius(ctx, deviceservice.RadiusInventoryInput{
 			MACAddress:   req.MACAddress,
@@ -332,9 +389,16 @@ func (s *Service) syncAccountingInventory(ctx context.Context, req domain.Accoun
 			NASPortID:    req.NASPortID,
 			ObservedAt:   observedAt,
 		}); err != nil {
-			log.Printf("radius accounting device upsert failed: mac=%q switch=%q err=%v", req.MACAddress, switchAsset.Name, err)
+			return fmt.Errorf("upsert radius accounting device: %w", err)
 		}
 	}
+
+	if s.observations != nil {
+		if _, err := s.observations.Insert(ctx, observation); err != nil {
+			return fmt.Errorf("insert radius accounting observation: %w", err)
+		}
+	}
+	return nil
 }
 
 func (s *Service) syncAuthorizeSession(ctx context.Context, req domain.AuthorizeRequest, resp domain.AuthorizeResponse) {
@@ -370,8 +434,8 @@ func (s *Service) syncAuthorizeSession(ctx context.Context, req domain.Authorize
 		PolicyAction:     strings.TrimSpace(resp.PolicyAction),
 		PolicyReason:     strings.TrimSpace(resp.PolicyReason),
 		AssignedVLAN:     strings.TrimSpace(resp.VLANID),
-		StartedAt:        now,
-		LastSeenAt:       now,
+		StartedAt:        time.Time{},
+		LastSeenAt:       time.Time{},
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
@@ -384,17 +448,17 @@ func (s *Service) syncAuthorizeSession(ctx context.Context, req domain.Authorize
 	}
 }
 
-func (s *Service) syncAccountingSession(ctx context.Context, req domain.AccountingRequest) {
+func (s *Service) syncAccountingSession(ctx context.Context, req domain.AccountingRequest, eventAt time.Time) (bool, error) {
 	if s.sessions == nil {
-		return
+		return false, errors.New("radius session repository is not configured")
 	}
 
-	switchAsset, ok := s.resolveSwitch(ctx, req.NASIPAddress, req.NASIdentifier)
-	if !ok {
-		return
+	switchAsset, err := s.resolveAccountingSwitch(ctx, req.NASIPAddress, req.NASIdentifier)
+	if err != nil {
+		return false, err
 	}
 
-	now := time.Now().UTC()
+	now := eventAt
 	portKey := buildActiveSessionKey(req.MACAddress, switchAsset.ID, req.NASPortID, req.NASPort)
 	activeKey := portKey
 	acctSessionID := strings.TrimSpace(req.AcctSessionID)
@@ -402,12 +466,14 @@ func (s *Service) syncAccountingSession(ctx context.Context, req domain.Accounti
 		acctKey := buildAccountingSessionKey(req.MACAddress, switchAsset.ID, acctSessionID)
 		existingByAcct, err := s.sessions.FindByAcctSession(ctx, req.MACAddress, switchAsset.ID, acctSessionID)
 		if err != nil {
-			log.Printf("radius accounting session lookup failed: mac=%q switch=%q acct_session_id=%q err=%v", req.MACAddress, switchAsset.Name, acctSessionID, err)
+			return false, fmt.Errorf("find radius accounting session: %w", err)
 		} else if existingByAcct != nil {
 			activeKey = existingByAcct.ActiveKey
+			if !existingByAcct.LastSeenAt.IsZero() && eventAt.Before(existingByAcct.LastSeenAt) {
+				return false, nil
+			}
 		} else if err := s.sessions.PromoteToAccountingKey(ctx, portKey, acctKey, acctSessionID); err != nil {
-			log.Printf("radius accounting session key promotion failed: mac=%q switch=%q acct_session_id=%q err=%v", req.MACAddress, switchAsset.Name, acctSessionID, err)
-			activeKey = acctKey
+			return false, fmt.Errorf("promote radius accounting session key: %w", err)
 		} else {
 			activeKey = acctKey
 		}
@@ -443,8 +509,34 @@ func (s *Service) syncAccountingSession(ctx context.Context, req domain.Accounti
 	}
 
 	if _, err := s.sessions.Upsert(ctx, session); err != nil {
-		log.Printf("radius accounting session upsert failed: mac=%q switch=%q err=%v", req.MACAddress, switchAsset.Name, err)
+		return false, fmt.Errorf("upsert radius accounting session: %w", err)
 	}
+	return true, nil
+}
+
+func (s *Service) resolveAccountingSwitch(ctx context.Context, nasIPAddress, nasIdentifier string) (*switchasset.Switch, error) {
+	if s.switches == nil {
+		return nil, errors.New("radius switch repository is not configured")
+	}
+	if value := strings.TrimSpace(nasIPAddress); value != "" {
+		candidate, err := s.switches.FindByManagementIP(ctx, value)
+		if err != nil {
+			return nil, fmt.Errorf("resolve radius switch by management IP: %w", err)
+		}
+		if candidate != nil {
+			return candidate, nil
+		}
+	}
+	if value := strings.TrimSpace(nasIdentifier); value != "" {
+		candidate, err := s.switches.FindByName(ctx, value)
+		if err != nil {
+			return nil, fmt.Errorf("resolve radius switch by name: %w", err)
+		}
+		if candidate != nil {
+			return candidate, nil
+		}
+	}
+	return nil, errors.New("radius accounting switch was not found")
 }
 
 func (s *Service) resolveSwitch(ctx context.Context, nasIPAddress, nasIdentifier string) (*switchasset.Switch, bool) {
@@ -527,7 +619,7 @@ func deriveAuthorizeSessionStatus(decision string) string {
 	if strings.EqualFold(strings.TrimSpace(decision), "reject") {
 		return "rejected"
 	}
-	return "authorized"
+	return "authorization-pending"
 }
 
 func deriveAccountingSessionStatus(acctStatusType string) string {
@@ -550,4 +642,87 @@ func deriveAccountingStartedAt(acctStatusType string, now time.Time) time.Time {
 	default:
 		return time.Time{}
 	}
+}
+
+func validateAccountingRequest(req domain.AccountingRequest) (string, error) {
+	status := canonicalAccountingStatus(req.AcctStatusType)
+	if status == "" {
+		return "", domain.ValidationError{Field: "acct_status_type", Message: "must be Start, Interim-Update, Stop, Accounting-On, or Accounting-Off"}
+	}
+	if strings.TrimSpace(req.NASIPAddress) == "" && strings.TrimSpace(req.NASIdentifier) == "" {
+		return "", domain.ValidationError{Field: "nas_ip_address", Message: "or nas_identifier is required"}
+	}
+	if value := strings.TrimSpace(req.NASIPAddress); value != "" && net.ParseIP(value) == nil {
+		return "", domain.ValidationError{Field: "nas_ip_address", Message: "must be a valid IP address"}
+	}
+	if req.AcctDelayTime < 0 || req.AcctDelayTime > 604800 {
+		return "", domain.ValidationError{Field: "acct_delay_time", Message: "must be between 0 and 604800 seconds"}
+	}
+	if status == "Accounting-On" || status == "Accounting-Off" {
+		return status, nil
+	}
+	if strings.TrimSpace(req.MACAddress) == "" {
+		return "", domain.ValidationError{Field: "mac_address", Message: "is required"}
+	}
+	if strings.TrimSpace(req.AcctSessionID) == "" {
+		return "", domain.ValidationError{Field: "acct_session_id", Message: "is required"}
+	}
+	if value := strings.TrimSpace(req.FramedIPAddress); value != "" && net.ParseIP(value) == nil {
+		return "", domain.ValidationError{Field: "framed_ip_address", Message: "must be a valid IP address"}
+	}
+	return status, nil
+}
+
+func canonicalAccountingStatus(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "start":
+		return "Start"
+	case "interim-update", "interim_update", "interim":
+		return "Interim-Update"
+	case "stop":
+		return "Stop"
+	case "accounting-on", "accounting_on":
+		return "Accounting-On"
+	case "accounting-off", "accounting_off":
+		return "Accounting-Off"
+	default:
+		return ""
+	}
+}
+
+func accountingEventTime(req domain.AccountingRequest, receivedAt time.Time) (time.Time, error) {
+	if value := strings.TrimSpace(req.EventTimestamp); value != "" {
+		if unixSeconds, err := strconv.ParseInt(value, 10, 64); err == nil {
+			return time.Unix(unixSeconds, 0).UTC(), nil
+		}
+		parsed, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil {
+			return time.Time{}, domain.ValidationError{Field: "event_timestamp", Message: "must be RFC3339 or Unix seconds"}
+		}
+		return parsed.UTC(), nil
+	}
+	return receivedAt.Add(-time.Duration(req.AcctDelayTime) * time.Second), nil
+}
+
+func accountingEventID(req domain.AccountingRequest, eventAt time.Time) string {
+	parts := []string{
+		strings.ToLower(strings.TrimSpace(req.AcctStatusType)),
+		strings.TrimSpace(req.AcctSessionID),
+		strings.ToLower(strings.TrimSpace(req.NASIPAddress)),
+		strings.ToLower(strings.TrimSpace(req.NASIdentifier)),
+		strings.ToUpper(strings.TrimSpace(req.MACAddress)),
+		strings.TrimSpace(req.EventTimestamp),
+		strings.TrimSpace(req.SessionTime),
+		strings.TrimSpace(req.FramedIPAddress),
+		strings.TrimSpace(req.TerminateCause),
+	}
+	if (req.AcctStatusType == "Accounting-On" || req.AcctStatusType == "Accounting-Off") && strings.TrimSpace(req.EventTimestamp) == "" {
+		parts = append(parts, eventAt.Truncate(time.Minute).Format(time.RFC3339))
+	}
+	digest := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	id := uuid.UUID{}
+	copy(id[:], digest[:16])
+	id[6] = (id[6] & 0x0f) | 0x80
+	id[8] = (id[8] & 0x3f) | 0x80
+	return id.String()
 }
