@@ -226,6 +226,16 @@ class SwitchStatsServiceTest extends TestCase
         $this->assertSame('-', $payload['user']);
     }
 
+    public function test_infrastructure_port_detection_uses_flags_and_mac_density(): void
+    {
+        $service = new SwitchStatsServiceTestDouble();
+
+        $this->assertTrue($service->isInfrastructure(['is_uplink' => true, 'mac_count' => 1]));
+        $this->assertTrue($service->isInfrastructure(['is_trunk' => true, 'mac_count' => 1]));
+        $this->assertTrue($service->isInfrastructure(['mac_count' => 8]));
+        $this->assertFalse($service->isInfrastructure(['mac_count' => 1]));
+    }
+
     public function test_detail_resolves_go_switch_id_by_hostname_when_local_id_differs(): void
     {
         $switch = new NetworkSwitch([
@@ -315,6 +325,11 @@ class SwitchStatsServiceTestDouble extends SwitchStatsService
     public function buildTopologyIndex(string $localPortName, array $payload): array
     {
         return $this->storeTopologyLink([], $localPortName, $payload);
+    }
+
+    public function isInfrastructure(?array $goPort): bool
+    {
+        return $this->isInfrastructurePort($goPort);
     }
 
     protected function topologyLinksForSwitch(NetworkSwitch $switch): array

@@ -294,8 +294,9 @@ class SwitchStatsService
             $this->forgetRemoteSwitchCaches($port->switch);
         }
         $goPorts = $port->switch ? $this->goPortsForSwitch($port->switch) : [];
+        $goPort = $this->goPortForLocalPort($port, $goPorts);
         $lookupIfIndex = (int) ($port->if_index ?: $port->port_index ?: 0);
-        $goDevices = $port->switch && $lookupIfIndex > 0
+        $goDevices = $port->switch && $lookupIfIndex > 0 && ! $this->isInfrastructurePort($goPort)
             ? $this->goDevicesForPort($port->switch, $lookupIfIndex)
             : [];
 
@@ -899,6 +900,17 @@ class SwitchStatsService
         )));
 
         return in_array($endpointMAC, $observedMACs, true);
+    }
+
+    protected function isInfrastructurePort(?array $goPort): bool
+    {
+        if (! is_array($goPort)) {
+            return false;
+        }
+
+        return ($goPort['is_uplink'] ?? false) === true
+            || ($goPort['is_trunk'] ?? false) === true
+            || (int) ($goPort['mac_count'] ?? 0) >= 8;
     }
 
     protected function displayIPAddress(?string $ipAddress): ?string
