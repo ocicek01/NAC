@@ -294,7 +294,10 @@ class SwitchStatsService
             $this->forgetRemoteSwitchCaches($port->switch);
         }
         $goPorts = $port->switch ? $this->goPortsForSwitch($port->switch) : [];
-        $goDevices = $port->switch ? $this->goDevicesForSwitch($port->switch) : [];
+        $lookupIfIndex = (int) ($port->if_index ?: $port->port_index ?: 0);
+        $goDevices = $port->switch && $lookupIfIndex > 0
+            ? $this->goDevicesForPort($port->switch, $lookupIfIndex)
+            : [];
 
         $detail = $this->portPayload($port, [], $goPorts, $goDevices) + [
             'status' => $port->status,
@@ -809,27 +812,48 @@ class SwitchStatsService
                 return [];
             }
 
-            $indexed = ['__all' => []];
-            foreach ($devices as $device) {
-                if (! is_array($device)) {
-                    continue;
-                }
+            return $this->indexGoDevices($devices);
+        });
+    }
 
-                $indexed['__all'][] = $device;
+    protected function goDevicesForPort(NetworkSwitch $switch, int $ifIndex): array
+    {
+        $client = $this->nacApi();
+        if (! $client || $ifIndex <= 0) {
+            return [];
+        }
 
-                foreach ($this->goDeviceCandidates($device) as $candidate) {
-                    if ($candidate === '') {
-                        continue;
-                    }
-                    if (! isset($indexed[$candidate])) {
-                        $indexed[$candidate] = [];
-                    }
-                    $indexed[$candidate][] = $device;
-                }
+        try {
+            $goSwitchId = $this->resolveGoSwitchId($switch);
+            if ($goSwitchId === null) {
+                return [];
             }
 
-            return $indexed;
-        });
+            return $this->indexGoDevices($client->devicesBySwitch($goSwitchId, $ifIndex));
+        } catch (RuntimeException) {
+            return [];
+        }
+    }
+
+    protected function indexGoDevices(array $devices): array
+    {
+        $indexed = ['__all' => []];
+        foreach ($devices as $device) {
+            if (! is_array($device)) {
+                continue;
+            }
+
+            $indexed['__all'][] = $device;
+            foreach ($this->goDeviceCandidates($device) as $candidate) {
+                if ($candidate === '') {
+                    continue;
+                }
+                $indexed[$candidate] ??= [];
+                $indexed[$candidate][] = $device;
+            }
+        }
+
+        return $indexed;
     }
 
     protected function goPortsCacheKey(NetworkSwitch $switch): string

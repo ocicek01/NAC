@@ -124,7 +124,7 @@ class NacApiTest extends TestCase
                 ->andReturn([]);
             $mock->shouldReceive('devicesBySwitch')
                 ->once()
-                ->with('go-switch-19')
+                ->with('go-switch-19', 32)
                 ->andReturn([
                     [
                         'port_name' => '32',
@@ -212,7 +212,7 @@ class NacApiTest extends TestCase
                 ]);
             $mock->shouldReceive('devicesBySwitch')
                 ->once()
-                ->with('go-switch-19')
+                ->with('go-switch-19', 32)
                 ->andReturn([]);
             $mock->shouldReceive('topologyLinks')->andReturn([]);
             $mock->shouldReceive('switchPortSummary')->andReturn([]);
@@ -288,7 +288,7 @@ class NacApiTest extends TestCase
                 ]);
             $mock->shouldReceive('devicesBySwitch')
                 ->once()
-                ->with('go-switch-19')
+                ->with('go-switch-19', 32)
                 ->andReturn([
                     [
                         'mac_address' => '30:9C:23:9B:97:AA',
