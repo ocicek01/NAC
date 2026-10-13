@@ -11,6 +11,7 @@ import (
 	"nac/internal/arpsnmpwalk"
 	dhcpcollector "nac/internal/collector/dhcp"
 	snmptrapcollector "nac/internal/collector/snmptrap"
+	sophossyslogcollector "nac/internal/collector/sophossyslog"
 	"nac/internal/config"
 	"nac/internal/database"
 	arpsnapshotdomain "nac/internal/domain/arpsnapshot"
@@ -47,6 +48,7 @@ import (
 	radiuseventrepository "nac/internal/repository/radiusevent"
 	sessionrepository "nac/internal/repository/session"
 	snmptraprepository "nac/internal/repository/snmptrap"
+	sophosauthrepository "nac/internal/repository/sophosauth"
 	sophosssorepository "nac/internal/repository/sophossso"
 	switchrepository "nac/internal/repository/switchasset"
 	switchportrepository "nac/internal/repository/switchport"
@@ -69,6 +71,7 @@ import (
 	radiusauthservice "nac/internal/service/radiusauth"
 	sessionservice "nac/internal/service/session"
 	snmptrapservice "nac/internal/service/snmptrap"
+	sophosauthservice "nac/internal/service/sophosauth"
 	sophosssoservice "nac/internal/service/sophossso"
 	switchservice "nac/internal/service/switchasset"
 	topologyservice "nac/internal/service/topology"
@@ -87,6 +90,7 @@ type App struct {
 	deviceWork      *deviceservice.Service
 	enforcementWork *enforcementservice.Service
 	sophosSSOWork   *sophosssoservice.Service
+	sophosAuth      *sophossyslogcollector.Collector
 }
 
 func New(ctx context.Context) (*App, error) {
@@ -172,6 +176,13 @@ func New(ctx context.Context) (*App, error) {
 	sophosSSORepository := sophosssorepository.NewPostgresRepository(postgresPool)
 	sophosSSOService := sophosssoservice.NewService(cfg.SophosSSO, sophosSSORepository, auditService)
 	radiusService.ConfigureSophosSSO(sophosSSOService)
+	sophosAuthRepository := sophosauthrepository.NewPostgresRepository(postgresPool)
+	sophosAuthService := sophosauthservice.NewService(cfg.SophosAuth, sophosAuthRepository, auditService)
+	sophosAuthCollector, err := sophossyslogcollector.New(cfg.SophosAuth, logger, sophosAuthService)
+	if err != nil {
+		postgresPool.Close()
+		return nil, err
+	}
 	macCorrelationService := maccorrelationservice.NewService(
 		logger,
 		macLookupService,
@@ -187,7 +198,7 @@ func New(ctx context.Context) (*App, error) {
 	trapForwarder := snmptrapservice.NewHTTPPortStatusForwarder(cfg.SNMPTrap.ForwardEnabled, cfg.SNMPTrap.ForwardURL, cfg.SNMPTrap.ForwardToken, time.Duration(cfg.SNMPTrap.ForwardTimeoutSec)*time.Second)
 	snmpTrapService := snmptrapservice.NewService(logger, snmpTrapRepository, switchRepository, switchPortRepository, trapWindowService, trapForwarder)
 
-	server := httpserver.New(cfg.App.Port, logger, dhcpEventService, switchAssetService, portEndpointService, macLookupService, macObservationService, topologyService, discoveryJobService, deviceService, guestIdentityService, portalRegistrationService, radiusSessionService, policyEngineService, enforcementEngineService, radiusService, cfg.Radius.APIToken, portEventService, auditService, sophosSSOService)
+	server := httpserver.New(cfg.App.Port, logger, dhcpEventService, switchAssetService, portEndpointService, macLookupService, macObservationService, topologyService, discoveryJobService, deviceService, guestIdentityService, portalRegistrationService, radiusSessionService, policyEngineService, enforcementEngineService, radiusService, cfg.Radius.APIToken, portEventService, auditService, sophosSSOService, sophosAuthService)
 	collector := dhcpcollector.New(cfg.DHCP, logger, dhcpEventService)
 	trapCollector := snmptrapcollector.New(cfg.SNMPTrap, logger, snmpTrapService)
 
@@ -202,6 +213,7 @@ func New(ctx context.Context) (*App, error) {
 		deviceWork:      deviceService,
 		enforcementWork: enforcementEngineService,
 		sophosSSOWork:   sophosSSOService,
+		sophosAuth:      sophosAuthCollector,
 	}, nil
 }
 
@@ -250,6 +262,13 @@ func (a *App) Run(ctx context.Context) error {
 						a.logger.Warn("trap window processor failed", "error", err)
 					}
 				}
+			}
+		}()
+	}
+	if a.config.SophosAuth.Enabled && a.sophosAuth != nil {
+		go func() {
+			if err := a.sophosAuth.Start(ctx); err != nil {
+				errCh <- err
 			}
 		}()
 	}

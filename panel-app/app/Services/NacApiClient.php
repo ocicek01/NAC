@@ -126,6 +126,11 @@ class NacApiClient
         return $this->optionalGet('/api/v1/audit-logs?limit='.max(1, $limit));
     }
 
+    public function sophosAuthSessions(int $limit = 10): array
+    {
+        return $this->optionalGet('/api/v1/sophos-auth/sessions?limit='.max(1, min(50, $limit)));
+    }
+
     public function switches(): array
     {
         return $this->get('/api/v1/switches');

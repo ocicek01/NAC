@@ -2,6 +2,7 @@
     $devices = $devices ?? collect();
     $portEvents = $portEvents ?? collect();
     $auditLogs = $auditLogs ?? collect();
+    $sophosAuthSessions = $sophosAuthSessions ?? collect();
     $summary = $summary ?? [];
 
     $statusMap = [
@@ -32,6 +33,7 @@
         .stat-value { font-size:1.6rem; font-weight:700; margin-top:6px; }
         .table-wrap { overflow:auto; }
         table { width:100%; min-width:2120px; }
+        table.compact-table { min-width:900px; }
         th { font-size:.8rem; letter-spacing:.04em; color:#5d6b80; text-transform:uppercase; }
         td, th { padding:12px 14px; border-bottom:1px solid #e6edf5; vertical-align:middle; }
         tr:last-child td { border-bottom:0; }
@@ -142,6 +144,8 @@
                                 <div class="muted">Status: {{ $device['authentication_status'] ?: 'not_attempted' }}</div>
                                 <div class="muted">Sophos User: {{ $device['sophos_username'] ?: '-' }}</div>
                                 <div class="muted">Sophos IP: {{ $device['sophos_last_ip'] ?: '-' }}</div>
+                                <div class="muted">Sophos Source: {{ $device['sophos_username'] ? (($device['authentication_method'] ?? '') ?: '-') : '-' }}</div>
+                                <div class="muted">Sophos Last Seen: {{ $device['sophos_last_seen_at'] ?? '-' }}</div>
                             </td>
                             <td>
                                 <div>Approved By: <strong>{{ $device['approved_by'] ?: '-' }}</strong></div>
@@ -191,6 +195,48 @@
                         <tr>
                             <td colspan="9" class="text-center text-muted py-5">Cihaz kaydi bulunamadi.</td>
                         </tr>
+                    @endforelse
+                </tbody>
+            </table>
+        </div>
+
+        <div class="panel table-wrap mt-3">
+            <div class="panel-head">
+                <h2>Son Sophos Captive Portal Oturumlari</h2>
+                <div class="muted">Current user korelasyonu; kayitli cihaz sahibi bilgisi degildir.</div>
+            </div>
+            <table class="compact-table">
+                <thead>
+                    <tr>
+                        <th>Last Seen</th>
+                        <th>User / Group</th>
+                        <th>IP / MAC</th>
+                        <th>Client</th>
+                        <th>Session</th>
+                        <th>Correlation</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @forelse ($sophosAuthSessions as $session)
+                        <tr>
+                            <td class="mono">{{ $session['last_seen_at'] ?? '-' }}</td>
+                            <td>
+                                <div><strong>{{ $session['username'] ?? '-' }}</strong></div>
+                                <div class="muted">{{ $session['user_group'] ?: '-' }}</div>
+                            </td>
+                            <td>
+                                <div>{{ $session['ip_address'] ?? '-' }}</div>
+                                <div class="muted mac">{{ $session['mac_address'] ?: '-' }}</div>
+                            </td>
+                            <td>
+                                <div>{{ $session['client_used'] ?? '-' }}</div>
+                                <div class="muted">{{ $session['auth_mechanism'] ?: '-' }}</div>
+                            </td>
+                            <td>{{ $session['status'] ?? '-' }}</td>
+                            <td><span class="pill">{{ $session['correlation_status'] ?? '-' }}</span></td>
+                        </tr>
+                    @empty
+                        <tr><td colspan="6" class="text-center text-muted py-4">Captive portal oturumu bulunamadi.</td></tr>
                     @endforelse
                 </tbody>
             </table>

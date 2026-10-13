@@ -26,11 +26,13 @@ class DevicePageController extends Controller
 
         $portEvents = collect($this->nacApiClient->portEvents(20));
         $auditLogs = collect($this->nacApiClient->auditLogs(20));
+        $sophosAuthSessions = collect($this->nacApiClient->sophosAuthSessions(10));
 
         return view('devices.index', [
             'devices' => $devices,
             'portEvents' => $portEvents,
             'auditLogs' => $auditLogs,
+            'sophosAuthSessions' => $sophosAuthSessions,
             'summary' => [
                 'device_count' => $devices->count(),
                 'pending_count' => $devices->where('status', 'pending')->count(),
