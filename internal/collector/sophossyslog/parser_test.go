@@ -56,6 +56,7 @@ func (p *collectorProcessor) Process(context.Context, domain.ParsedEvent) error 
 func (p *collectorProcessor) ProcessDue(context.Context, int) error             { return nil }
 func (p *collectorProcessor) RecordRejectedSource(context.Context, string)      { p.rejected++ }
 func (p *collectorProcessor) RecordParseFailure(context.Context, string, error) { p.failed++ }
+func (p *collectorProcessor) RecordQueueDrop(context.Context, string, int)      {}
 
 func TestCollectorEnforcesSourceAllowlistBeforeParsing(t *testing.T) {
 	processor := &collectorProcessor{}

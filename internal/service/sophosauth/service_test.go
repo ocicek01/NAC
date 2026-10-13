@@ -3,6 +3,7 @@ package sophosauth
 import (
 	"context"
 	"errors"
+	"sort"
 	"testing"
 	"time"
 
@@ -22,25 +23,31 @@ type memoryRepository struct {
 	deviceSeen   time.Time
 	deviceMethod string
 	auditActions []string
+	watermarks   map[string]domain.Event
 	failOpenOnce bool
 	failOpen     bool
 	claimSeq     int
 }
 
 func newMemoryRepository() *memoryRepository {
-	return &memoryRepository{events: map[string]domain.Event{}, bindings: map[string][]string{}, owner: "registered-owner"}
+	return &memoryRepository{events: map[string]domain.Event{}, bindings: map[string][]string{}, watermarks: map[string]domain.Event{}, owner: "registered-owner"}
 }
 
 func (r *memoryRepository) InsertEvent(_ context.Context, event domain.Event) (domain.Event, bool, error) {
 	if existing, ok := r.events[event.Fingerprint]; ok {
 		return existing, false, nil
 	}
+	if event.EventType == "ignored" {
+		event.ProcessingStatus = "ignored"
+	} else {
+		event.ProcessingStatus = "pending"
+	}
 	r.events[event.Fingerprint] = event
 	return event, true, nil
 }
 func (r *memoryRepository) ClaimEvent(_ context.Context, fingerprint string, now time.Time, lease time.Duration, maxAttempts int) (domain.Claim, bool, error) {
 	event, ok := r.events[fingerprint]
-	if !ok || !claimable(event, now, maxAttempts) {
+	if !ok || !claimable(event, now, maxAttempts) || r.hasNonterminalPredecessor(event) {
 		return domain.Claim{}, false, nil
 	}
 	r.claimSeq++
@@ -50,7 +57,12 @@ func (r *memoryRepository) ClaimEvent(_ context.Context, fingerprint string, now
 	return domain.Claim{Event: event, Token: string(rune('a' + r.claimSeq))}, true, nil
 }
 func (r *memoryRepository) ClaimDueEvents(ctx context.Context, now time.Time, lease time.Duration, maxAttempts, limit int) ([]domain.Claim, error) {
+	fingerprints := make([]string, 0, len(r.events))
 	for fingerprint := range r.events {
+		fingerprints = append(fingerprints, fingerprint)
+	}
+	sort.Slice(fingerprints, func(i, j int) bool { return causalBefore(r.events[fingerprints[i]], r.events[fingerprints[j]]) })
+	for _, fingerprint := range fingerprints {
 		if claim, ok, err := r.ClaimEvent(ctx, fingerprint, now, lease, maxAttempts); err != nil {
 			return nil, err
 		} else if ok {
@@ -58,6 +70,45 @@ func (r *memoryRepository) ClaimDueEvents(ctx context.Context, now time.Time, le
 		}
 	}
 	return nil, nil
+}
+
+func (r *memoryRepository) hasNonterminalPredecessor(event domain.Event) bool {
+	for _, candidate := range r.events {
+		if candidate.ID == event.ID || !sameCausalIdentity(candidate, event) {
+			continue
+		}
+		if candidate.ProcessingStatus != "pending" && candidate.ProcessingStatus != "retry" && candidate.ProcessingStatus != "processing" && candidate.ProcessingStatus != "" {
+			continue
+		}
+		if causalBefore(candidate, event) {
+			return true
+		}
+	}
+	return false
+}
+
+func sameCausalIdentity(a, b domain.Event) bool {
+	return a.Username == b.Username && a.SourceIP == b.SourceIP
+}
+
+func causalBefore(a, b domain.Event) bool {
+	if !a.EventAt.Equal(b.EventAt) {
+		return a.EventAt.Before(b.EventAt)
+	}
+	if eventRank(a) != eventRank(b) {
+		return eventRank(a) < eventRank(b)
+	}
+	if !a.ReceivedAt.Equal(b.ReceivedAt) {
+		return a.ReceivedAt.Before(b.ReceivedAt)
+	}
+	return a.ID < b.ID
+}
+
+func eventRank(event domain.Event) int {
+	if event.EventType == "logout" {
+		return 2
+	}
+	return 1
 }
 func claimable(event domain.Event, now time.Time, maxAttempts int) bool {
 	if event.AttemptCount >= maxAttempts || event.ProcessingStatus == "completed" || event.ProcessingStatus == "ignored" || event.ProcessingStatus == "dead_letter" {
@@ -174,6 +225,7 @@ type memoryEffects struct {
 	deviceUser, deviceIP, deviceMethod string
 	deviceSeen                         time.Time
 	auditActions                       []string
+	watermarks                         map[string]domain.Event
 }
 
 func newMemoryEffects(r *memoryRepository, claim domain.Claim) *memoryEffects {
@@ -181,7 +233,19 @@ func newMemoryEffects(r *memoryRepository, claim domain.Claim) *memoryEffects {
 	for key, event := range r.events {
 		events[key] = event
 	}
-	return &memoryEffects{repo: r, claim: claim, events: events, sessions: append([]domain.Session(nil), r.sessions...), setCalls: append([]string(nil), r.setCalls...), clearCalls: append([]string(nil), r.clearCalls...), deviceUser: r.deviceUser, deviceIP: r.deviceIP, deviceMethod: r.deviceMethod, deviceSeen: r.deviceSeen, auditActions: append([]string(nil), r.auditActions...)}
+	watermarks := make(map[string]domain.Event, len(r.watermarks))
+	for key, event := range r.watermarks {
+		watermarks[key] = event
+	}
+	return &memoryEffects{repo: r, claim: claim, events: events, sessions: append([]domain.Session(nil), r.sessions...), setCalls: append([]string(nil), r.setCalls...), clearCalls: append([]string(nil), r.clearCalls...), deviceUser: r.deviceUser, deviceIP: r.deviceIP, deviceMethod: r.deviceMethod, deviceSeen: r.deviceSeen, auditActions: append([]string(nil), r.auditActions...), watermarks: watermarks}
+}
+func (e *memoryEffects) ReserveCausalOrder(_ context.Context, event domain.Event) (bool, error) {
+	key := event.Username + "|" + event.SourceIP
+	if current, ok := e.repo.watermarks[key]; ok && !causalBefore(current, event) {
+		return false, nil
+	}
+	e.repo.watermarks[key] = event
+	return true, nil
 }
 func (e *memoryEffects) UpdateEventCorrelation(ctx context.Context, id, status, mac string, metadata map[string]any) error {
 	return e.repo.UpdateEventCorrelation(ctx, id, status, mac, metadata)
@@ -224,6 +288,7 @@ func (e *memoryEffects) Rollback(_ context.Context) error {
 	e.repo.deviceMethod = e.deviceMethod
 	e.repo.deviceSeen = e.deviceSeen
 	e.repo.auditActions = e.auditActions
+	e.repo.watermarks = e.watermarks
 	return nil
 }
 
@@ -449,6 +514,78 @@ func TestBackgroundRetryCompletesDueEvent(t *testing.T) {
 	}
 	if repo.events["background-retry"].ProcessingStatus != "completed" || len(repo.auditActions) != 1 {
 		t.Fatalf("background retry did not complete exactly once: %#v audit=%v", repo.events["background-retry"], repo.auditActions)
+	}
+}
+
+func TestFailedLoginRetryBlocksLaterLogoutUntilLoginCompletes(t *testing.T) {
+	repo := newMemoryRepository()
+	repo.bindings["10.6.9.93"] = []string{"30:9C:23:9B:97:AA"}
+	repo.failOpenOnce = true
+	service := newService(repo)
+	clock := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return clock }
+
+	login := parsed("ordered-login")
+	if err := service.Process(context.Background(), login); err == nil {
+		t.Fatal("expected login processing failure")
+	}
+	logout := parsed("ordered-logout")
+	logout.EventType = "logout"
+	logout.MessageID = "17703"
+	logout.EventAt = login.EventAt.Add(time.Minute)
+	if err := service.Process(context.Background(), logout); err != nil {
+		t.Fatal(err)
+	}
+	if repo.events[logout.Fingerprint].ProcessingStatus != "pending" {
+		t.Fatalf("logout bypassed retrying login: %#v", repo.events[logout.Fingerprint])
+	}
+	if len(repo.sessions) != 0 || len(repo.clearCalls) != 0 {
+		t.Fatalf("blocked logout produced side effects: sessions=%v clear=%v", repo.sessions, repo.clearCalls)
+	}
+
+	clock = clock.Add(2 * time.Second)
+	if err := service.ProcessDue(context.Background(), 2); err != nil {
+		t.Fatal(err)
+	}
+	if repo.events[login.Fingerprint].ProcessingStatus != "completed" || repo.events[logout.Fingerprint].ProcessingStatus != "completed" {
+		t.Fatalf("ordered events did not complete: login=%#v logout=%#v", repo.events[login.Fingerprint], repo.events[logout.Fingerprint])
+	}
+	if len(repo.sessions) != 1 || repo.sessions[0].Status != "closed" || len(repo.clearCalls) != 1 || repo.deviceUser != "" {
+		t.Fatalf("causal login/logout result is wrong: sessions=%#v clear=%v user=%q", repo.sessions, repo.clearCalls, repo.deviceUser)
+	}
+}
+
+func TestLateOlderLoginAfterCompletedLogoutCannotReactivateIdentity(t *testing.T) {
+	repo := newMemoryRepository()
+	repo.bindings["10.6.9.93"] = []string{"30:9C:23:9B:97:AA"}
+	service := newService(repo)
+	clock := time.Date(2026, 10, 13, 12, 20, 0, 0, time.UTC)
+	service.now = func() time.Time { return clock }
+
+	logout := parsed("completed-logout")
+	logout.EventType = "logout"
+	logout.MessageID = "17703"
+	logout.EventAt = time.Date(2026, 10, 13, 12, 10, 0, 0, time.UTC)
+	if err := service.Process(context.Background(), logout); err != nil {
+		t.Fatal(err)
+	}
+
+	lateLogin := parsed("late-old-login")
+	lateLogin.EventAt = logout.EventAt.Add(-time.Minute)
+	lateLogin.SourceMAC = "30:9C:23:9B:97:AA"
+	clock = clock.Add(time.Second)
+	if err := service.Process(context.Background(), lateLogin); err != nil {
+		t.Fatal(err)
+	}
+	stored := repo.events[lateLogin.Fingerprint]
+	if stored.ProcessingStatus != "completed" || stored.CorrelationStatus != "ignored" {
+		t.Fatalf("late login was not durably suppressed: %#v", stored)
+	}
+	if len(repo.sessions) != 0 || len(repo.setCalls) != 0 || repo.deviceUser != "" {
+		t.Fatalf("late login reactivated identity: sessions=%#v set=%v user=%q", repo.sessions, repo.setCalls, repo.deviceUser)
+	}
+	if len(repo.auditActions) == 0 || repo.auditActions[len(repo.auditActions)-1] != "sophos_auth_stale_event" {
+		t.Fatalf("stale login audit missing: %v", repo.auditActions)
 	}
 }
 

@@ -24,6 +24,8 @@ The listener is disabled by default.
 SOPHOS_SYSLOG_ENABLED=false
 SOPHOS_SYSLOG_BIND_HOST=0.0.0.0
 SOPHOS_SYSLOG_PORT=5514
+SOPHOS_SYSLOG_WORKER_COUNT=4
+SOPHOS_SYSLOG_QUEUE_SIZE=256
 SOPHOS_SYSLOG_ALLOWED_SOURCES=10.6.0.1
 SOPHOS_SYSLOG_ALLOWED_CLIENTS=Captive Portal,Web Client
 SOPHOS_SYSLOG_BINDING_FRESHNESS_SECONDS=600
@@ -34,6 +36,12 @@ When enabled, `SOPHOS_SYSLOG_ALLOWED_SOURCES` is mandatory and accepts IPs or
 CIDRs. Configure Sophos to send Firewall Authentication logs to the NAC host's
 UDP port. Restrict that port at the host firewall to the same source addresses.
 
+The UDP reader hands events to a bounded worker pool. Worker count defaults to
+`4` and queue size defaults to `256`. When the queue is full, the datagram is
+dropped explicitly, a warning is logged, and a `sophos_auth_queue_drop` audit
+event is attempted through a separate bounded audit queue. No per-packet
+goroutines are created.
+
 ## Visibility
 
 - `GET /api/v1/sophos-auth/sessions?limit=50&offset=0`
@@ -43,3 +51,4 @@ UDP port. Restrict that port at the host firewall to the same source addresses.
 Expected audit actions include `sophos_auth_login_correlated`,
 `sophos_auth_logout`, `sophos_auth_uncorrelated`, `sophos_auth_ambiguous`,
 `sophos_auth_rejected_source`, and `sophos_auth_parse_failed`.
+Queue pressure is visible as `sophos_auth_queue_drop`.

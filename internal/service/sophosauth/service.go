@@ -107,9 +107,18 @@ func (s *Service) processClaim(ctx context.Context, claim domain.Claim) error {
 	if err != nil {
 		return s.failClaim(claim, err)
 	}
-	if claim.Event.EventType == "logout" {
+	accepted, err := effects.ReserveCausalOrder(ctx, claim.Event)
+	if err == nil && !accepted {
+		err = effects.UpdateEventCorrelation(ctx, claim.Event.ID, "ignored", "", map[string]any{"reason": "stale_causal_event"})
+		if err == nil {
+			err = effects.RecordAudit(ctx, "sophos_auth_stale_event", "warning", claim.Event.ID, "", map[string]any{
+				"username": claim.Event.Username, "ip_address": claim.Event.SourceIP,
+				"event_type": claim.Event.EventType, "event_at": claim.Event.EventAt,
+			})
+		}
+	} else if err == nil && claim.Event.EventType == "logout" {
 		err = s.processLogout(ctx, effects, claim.Event)
-	} else {
+	} else if err == nil {
 		err = s.processLogin(ctx, effects, claim.Event)
 	}
 	if err == nil {
@@ -270,6 +279,10 @@ func (s *Service) RecordRejectedSource(ctx context.Context, sourceIP string) {
 
 func (s *Service) RecordParseFailure(ctx context.Context, sourceIP string, err error) {
 	_ = s.record(ctx, "sophos_auth_parse_failed", "warning", "", "", map[string]any{"source_ip": sourceIP, "error": err.Error()})
+}
+
+func (s *Service) RecordQueueDrop(ctx context.Context, sourceIP string, payloadBytes int) {
+	_ = s.record(ctx, "sophos_auth_queue_drop", "warning", "", "", map[string]any{"source_ip": sourceIP, "payload_bytes": payloadBytes})
 }
 
 func (s *Service) record(ctx context.Context, action, status, targetID, mac string, payload map[string]any) error {

@@ -212,19 +212,21 @@ func (s *Service) Accounting(ctx context.Context, req domain.AccountingRequest) 
 	}
 
 	var effectiveSession *sessiondomain.Session
+	accountingApplied := false
 	if status != "Accounting-On" && status != "Accounting-Off" {
 		storedSession, applied, err := s.syncAccountingSession(ctx, req, eventAt)
 		if err != nil {
 			return domain.AccountingResponse{}, s.failAccounting(ctx, event.ID, claimedAt, err)
 		}
 		effectiveSession = storedSession
+		accountingApplied = applied
 		if applied {
 			if err := s.syncAccountingInventory(ctx, req, eventAt); err != nil {
 				return domain.AccountingResponse{}, s.failAccounting(ctx, event.ID, claimedAt, err)
 			}
 		}
 	}
-	if s.sophosSSO != nil && status != "Accounting-On" && status != "Accounting-Off" {
+	if s.sophosSSO != nil && accountingApplied {
 		effectiveIP := strings.TrimSpace(req.FramedIPAddress)
 		if effectiveIP == "" && effectiveSession != nil {
 			effectiveIP = strings.TrimSpace(effectiveSession.IPAddress)

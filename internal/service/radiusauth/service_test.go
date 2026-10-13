@@ -402,6 +402,57 @@ func TestLateStartCannotOverwriteStoppedSession(t *testing.T) {
 	}
 }
 
+func TestStaleAccountingAfterStopDoesNotEnqueueSophosSSO(t *testing.T) {
+	for _, staleStatus := range []string{"Start", "Interim-Update"} {
+		t.Run(staleStatus, func(t *testing.T) {
+			events := &accountingEventStore{}
+			sessions := &accountingSessionStore{}
+			enqueuer := &accountingEnqueuer{}
+			service := newAccountingService(events, sessions)
+			service.ConfigureSophosSSO(enqueuer)
+
+			start := validAccountingRequest("Start")
+			start.EventTimestamp = "2026-10-13T12:00:00Z"
+			if _, err := service.Accounting(context.Background(), start); err != nil {
+				t.Fatalf("Accounting(Start) error = %v", err)
+			}
+
+			stop := validAccountingRequest("Stop")
+			stop.EventTimestamp = "2026-10-13T12:02:00Z"
+			stop.SessionTime = "120"
+			if _, err := service.Accounting(context.Background(), stop); err != nil {
+				t.Fatalf("Accounting(Stop) error = %v", err)
+			}
+
+			stale := validAccountingRequest(staleStatus)
+			stale.EventTimestamp = "2026-10-13T12:01:00Z"
+			stale.SessionTime = "60"
+			if _, err := service.Accounting(context.Background(), stale); err != nil {
+				t.Fatalf("Accounting(stale %s) error = %v", staleStatus, err)
+			}
+
+			if len(enqueuer.inputs) != 2 {
+				t.Fatalf("Sophos SSO enqueue count = %d, want 2 (Start and Stop only)", len(enqueuer.inputs))
+			}
+			if sessions.upserts != 2 {
+				t.Fatalf("session upserts = %d, want 2", sessions.upserts)
+			}
+			if len(sessions.items) != 1 {
+				t.Fatalf("session count = %d, want 1", len(sessions.items))
+			}
+			for _, item := range sessions.items {
+				if item.Status != "stopped" || item.EndedAt == nil || !item.LastSeenAt.Equal(time.Date(2026, 10, 13, 12, 2, 0, 0, time.UTC)) {
+					t.Fatalf("session changed after stale %s: %+v", staleStatus, item)
+				}
+			}
+			staleEventID := accountingEventID(stale, time.Date(2026, 10, 13, 12, 1, 0, 0, time.UTC))
+			if events.states[staleEventID] != "processed" {
+				t.Fatalf("stale event state = %q, want processed", events.states[staleEventID])
+			}
+		})
+	}
+}
+
 func TestAccountingUsesEventTimestampAndDelay(t *testing.T) {
 	events := &accountingEventStore{}
 	service := newAccountingService(events, &accountingSessionStore{})

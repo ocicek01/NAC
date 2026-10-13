@@ -17,6 +17,7 @@ type Repository interface {
 }
 
 type Effects interface {
+	ReserveCausalOrder(ctx context.Context, event Event) (bool, error)
 	UpdateEventCorrelation(ctx context.Context, id, status, macAddress string, metadata map[string]any) error
 	FindFreshMACsByIP(ctx context.Context, ipAddress string, since time.Time) ([]string, error)
 	OpenSession(ctx context.Context, event Event) (Session, error)

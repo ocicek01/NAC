@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"nac/internal/config"
@@ -18,6 +19,7 @@ type processor interface {
 	ProcessDue(ctx context.Context, limit int) error
 	RecordRejectedSource(ctx context.Context, sourceIP string)
 	RecordParseFailure(ctx context.Context, sourceIP string, err error)
+	RecordQueueDrop(ctx context.Context, sourceIP string, payloadBytes int)
 }
 
 type Collector struct {
@@ -32,7 +34,33 @@ type ipRange struct {
 	network *net.IPNet
 }
 
+type datagram struct {
+	sourceIP net.IP
+	payload  []byte
+}
+
+type dropNotice struct {
+	sourceIP     string
+	payloadBytes int
+}
+
+type udpReader interface {
+	SetReadDeadline(time.Time) error
+	ReadFromUDP([]byte) (int, *net.UDPAddr, error)
+}
+
+const (
+	defaultWorkerCount = 4
+	defaultQueueSize   = 256
+)
+
 func New(cfg config.SophosAuthConfig, logger *slog.Logger, processor processor) (*Collector, error) {
+	if cfg.WorkerCount <= 0 {
+		cfg.WorkerCount = defaultWorkerCount
+	}
+	if cfg.QueueSize <= 0 {
+		cfg.QueueSize = defaultQueueSize
+	}
 	allowed := make([]ipRange, 0, len(cfg.AllowedSources))
 	for _, entry := range cfg.AllowedSources {
 		entry = strings.TrimSpace(entry)
@@ -68,7 +96,48 @@ func (c *Collector) Start(ctx context.Context) error {
 	}
 	defer conn.Close()
 	c.logger.Info("Sophos syslog collector started", "addr", address)
-	go c.runRetries(ctx)
+	return c.serve(ctx, conn)
+}
+
+func (c *Collector) serve(ctx context.Context, conn udpReader) error {
+	workerCtx, cancelWorkers := context.WithCancel(ctx)
+	jobs := make(chan datagram, c.cfg.QueueSize)
+	drops := make(chan dropNotice, c.cfg.QueueSize)
+	var workers sync.WaitGroup
+
+	for range c.cfg.WorkerCount {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			c.runWorker(workerCtx, jobs)
+		}()
+	}
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		c.runDropAudit(workerCtx, drops)
+	}()
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		c.runRetries(workerCtx)
+	}()
+
+	wakeDone := make(chan struct{})
+	wakeReader := context.AfterFunc(workerCtx, func() {
+		_ = conn.SetReadDeadline(time.Now())
+		close(wakeDone)
+	})
+	defer func() {
+		cancelWorkers()
+		if !wakeReader() {
+			<-wakeDone
+		}
+		close(jobs)
+		close(drops)
+		workers.Wait()
+	}()
+
 	buffer := make([]byte, 65535)
 	for {
 		if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
@@ -84,7 +153,50 @@ func (c *Collector) Start(ctx context.Context) error {
 			}
 			return err
 		}
-		c.processDatagram(ctx, remote.IP, append([]byte(nil), buffer[:n]...))
+		job := datagram{sourceIP: append(net.IP(nil), remote.IP...), payload: append([]byte(nil), buffer[:n]...)}
+		select {
+		case <-workerCtx.Done():
+			return nil
+		case jobs <- job:
+		default:
+			c.logger.Warn("Sophos syslog processing queue full; datagram dropped", "source_ip", remote.IP.String(), "payload_bytes", n, "queue_size", c.cfg.QueueSize)
+			select {
+			case drops <- dropNotice{sourceIP: remote.IP.String(), payloadBytes: n}:
+			default:
+				c.logger.Warn("Sophos syslog drop audit queue full", "source_ip", remote.IP.String(), "payload_bytes", n)
+			}
+		}
+	}
+}
+
+func (c *Collector) runWorker(ctx context.Context, jobs <-chan datagram) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case job, ok := <-jobs:
+			if !ok {
+				return
+			}
+			c.processDatagram(ctx, job.sourceIP, job.payload)
+		}
+	}
+}
+
+func (c *Collector) runDropAudit(ctx context.Context, drops <-chan dropNotice) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case drop, ok := <-drops:
+			if !ok {
+				return
+			}
+			timeout := time.Duration(c.cfg.ProcessingTimeoutSec) * time.Second
+			auditCtx, cancel := context.WithTimeout(ctx, timeout)
+			c.processor.RecordQueueDrop(auditCtx, drop.sourceIP, drop.payloadBytes)
+			cancel()
+		}
 	}
 }
 

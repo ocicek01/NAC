@@ -88,15 +88,36 @@ func (r *PostgresRepository) claimOne(ctx context.Context, fingerprint string, n
 	token := uuid.NewString()
 	event, err := scanEvent(r.pool.QueryRow(ctx, `
 		WITH candidate AS (
-			SELECT id FROM sophos_auth_events
-			WHERE ($1='' OR fingerprint=$1)
-			  AND attempt_count < $5
+			SELECT e.id FROM sophos_auth_events e
+			WHERE ($1='' OR e.fingerprint=$1)
+			  AND e.attempt_count < $5
 			  AND (
-				processing_status='pending'
-				OR (processing_status='retry' AND COALESCE(next_attempt_at, $2) <= $2)
-				OR (processing_status='processing' AND lease_until < $2)
+				e.processing_status='pending'
+				OR (e.processing_status='retry' AND COALESCE(e.next_attempt_at, $2) <= $2)
+				OR (e.processing_status='processing' AND e.lease_until < $2)
 			  )
-			ORDER BY received_at
+			  AND NOT EXISTS (
+				SELECT 1 FROM sophos_auth_events predecessor
+				WHERE lower(predecessor.username)=lower(e.username)
+				  AND predecessor.source_ip=e.source_ip
+				  AND predecessor.id<>e.id
+				  AND predecessor.processing_status IN ('pending','retry','processing')
+				  AND (
+					predecessor.event_at < e.event_at
+					OR (predecessor.event_at=e.event_at
+						AND CASE WHEN predecessor.event_type='logout' THEN 2 ELSE 1 END
+							< CASE WHEN e.event_type='logout' THEN 2 ELSE 1 END)
+					OR (predecessor.event_at=e.event_at
+						AND CASE WHEN predecessor.event_type='logout' THEN 2 ELSE 1 END
+							= CASE WHEN e.event_type='logout' THEN 2 ELSE 1 END
+						AND predecessor.received_at < e.received_at)
+					OR (predecessor.event_at=e.event_at
+						AND CASE WHEN predecessor.event_type='logout' THEN 2 ELSE 1 END
+							= CASE WHEN e.event_type='logout' THEN 2 ELSE 1 END
+						AND predecessor.received_at=e.received_at AND predecessor.id < e.id)
+				  )
+			  )
+			ORDER BY e.event_at, CASE WHEN e.event_type='logout' THEN 2 ELSE 1 END, e.received_at, e.id
 			FOR UPDATE SKIP LOCKED LIMIT 1
 		)
 		UPDATE sophos_auth_events e
@@ -116,6 +137,38 @@ func (r *PostgresRepository) claimOne(ctx context.Context, fingerprint string, n
 		return domain.Claim{}, false, err
 	}
 	return domain.Claim{Event: event, Token: token}, true, nil
+}
+
+func (e *postgresEffects) ReserveCausalOrder(ctx context.Context, event domain.Event) (bool, error) {
+	eventRank := 1
+	if event.EventType == "logout" {
+		eventRank = 2
+	}
+	var accepted bool
+	err := e.tx.QueryRow(ctx, `
+		INSERT INTO sophos_auth_identity_watermarks (
+			username_normalized, source_ip, last_event_at, last_event_rank,
+			last_received_at, last_event_id, last_event_type, updated_at
+		) VALUES (lower($1),NULLIF($2,'')::inet,$3,$4,$5,$6,$7,NOW())
+		ON CONFLICT (username_normalized, source_ip) DO UPDATE SET
+			last_event_at=EXCLUDED.last_event_at,
+			last_event_rank=EXCLUDED.last_event_rank,
+			last_received_at=EXCLUDED.last_received_at,
+			last_event_id=EXCLUDED.last_event_id,
+			last_event_type=EXCLUDED.last_event_type,
+			updated_at=NOW()
+		WHERE (EXCLUDED.last_event_at, EXCLUDED.last_event_rank, EXCLUDED.last_received_at, EXCLUDED.last_event_id)
+			> (sophos_auth_identity_watermarks.last_event_at,
+			   sophos_auth_identity_watermarks.last_event_rank,
+			   sophos_auth_identity_watermarks.last_received_at,
+			   sophos_auth_identity_watermarks.last_event_id)
+		RETURNING true
+	`, strings.TrimSpace(event.Username), strings.TrimSpace(event.SourceIP), event.EventAt,
+		eventRank, event.ReceivedAt, event.ID, event.EventType).Scan(&accepted)
+	if err == pgx.ErrNoRows {
+		return false, nil
+	}
+	return accepted, err
 }
 
 func intervalLiteral(value time.Duration) string {
