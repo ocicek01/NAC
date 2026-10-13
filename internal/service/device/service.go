@@ -672,6 +672,17 @@ func (s *Service) ObserveAgentlessEvent(ctx context.Context, input domain.Agentl
 	return stored, nil
 }
 
+func (s *Service) DetachAgentlessEvent(ctx context.Context, macAddress, switchID string, ifIndex int, observedAt time.Time) (bool, error) {
+	macAddress = normalize.MACAddress(macAddress)
+	if macAddress == "" || strings.TrimSpace(switchID) == "" || ifIndex <= 0 {
+		return false, fmt.Errorf("valid mac, switch and if_index are required")
+	}
+	if observedAt.IsZero() {
+		observedAt = time.Now().UTC()
+	}
+	return s.repository.DetachIfCurrent(ctx, macAddress, strings.TrimSpace(switchID), ifIndex, observedAt.UTC())
+}
+
 func (s *Service) startEnrichmentWorkers() {
 	if s == nil || s.ldapDevices == nil || s.enrichmentQueue == nil {
 		return

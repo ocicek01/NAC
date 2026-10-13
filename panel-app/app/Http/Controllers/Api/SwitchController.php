@@ -174,6 +174,13 @@ class SwitchController extends Controller
 
     public function portsStatus(NetworkSwitch $switch): JsonResponse
     {
+        if (config('services.nac.port_observer_enabled', false)) {
+            $ports = app(\App\Services\ObserverPortStatus::class)->snapshot($switch);
+            return response()->json([
+                'data' => $ports,
+                'meta' => ['switch_id' => $switch->id, 'last_update' => collect($ports)->pluck('last_seen')->filter()->max()],
+            ])->header('Cache-Control', 'no-store');
+        }
         $ports = $switch->ports()
             ->orderBy('port_index')
             ->orderBy('if_index')

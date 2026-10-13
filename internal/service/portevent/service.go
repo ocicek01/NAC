@@ -2,6 +2,7 @@ package portevent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -15,6 +16,8 @@ import (
 	auditlogservice "nac/internal/service/auditlog"
 )
 
+var ErrEventProcessing = errors.New("port event is already processing")
+
 type Repository interface {
 	Insert(ctx context.Context, event domain.Event) (domain.Event, error)
 	ListRecent(ctx context.Context, limit int) ([]domain.Event, error)
@@ -26,6 +29,7 @@ type SwitchPortRepository interface {
 
 type DeviceObserver interface {
 	ObserveAgentlessEvent(ctx context.Context, input devicedomain.AgentlessObservationInput) (devicedomain.Device, error)
+	DetachAgentlessEvent(ctx context.Context, macAddress, switchID string, ifIndex int, observedAt time.Time) (bool, error)
 }
 
 type Service struct {
@@ -39,7 +43,7 @@ func NewService(repository Repository, switchPorts SwitchPortRepository, devices
 	return &Service{repository: repository, switchPorts: switchPorts, devices: devices, audit: audit}
 }
 
-func (s *Service) Ingest(ctx context.Context, event domain.Event) (domain.Event, error) {
+func (s *Service) Ingest(ctx context.Context, event domain.Event) (result domain.Event, resultErr error) {
 	if s == nil || s.repository == nil {
 		return domain.Event{}, fmt.Errorf("port event repository is not configured")
 	}
@@ -48,8 +52,57 @@ func (s *Service) Ingest(ctx context.Context, event domain.Event) (domain.Event,
 	if err != nil {
 		return domain.Event{}, err
 	}
+	claimed := false
+	if inbox, ok := s.repository.(interface {
+		BeginIngest(context.Context, string) (string, error)
+		CompleteIngest(context.Context, string) error
+		FailIngest(context.Context, string, string) error
+	}); ok {
+		status, claimErr := inbox.BeginIngest(ctx, normalized.ID)
+		if claimErr != nil {
+			return domain.Event{}, claimErr
+		}
+		switch status {
+		case "processing":
+			return domain.Event{}, ErrEventProcessing
+		case "completed":
+			if finder, found := s.repository.(interface {
+				FindByID(context.Context, string) (*domain.Event, error)
+			}); found {
+				existing, findErr := finder.FindByID(ctx, normalized.ID)
+				if findErr != nil {
+					return domain.Event{}, findErr
+				}
+				if existing != nil {
+					return *existing, nil
+				}
+			}
+			return normalized, nil
+		default:
+			claimed = true
+		}
+		defer func() {
+			if claimed && resultErr != nil {
+				failCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+				_ = inbox.FailIngest(failCtx, normalized.ID, resultErr.Error())
+				cancel()
+			}
+		}()
+	} else if finder, ok := s.repository.(interface {
+		FindByID(context.Context, string) (*domain.Event, error)
+	}); ok {
+		existing, findErr := finder.FindByID(ctx, normalized.ID)
+		if findErr != nil {
+			return domain.Event{}, findErr
+		}
+		if existing != nil {
+			return *existing, nil
+		}
+	}
 
-	if s.switchPorts != nil && normalized.SwitchID != "" && normalized.IfIndex > 0 {
+	// MAC deltas may be delivered after a newer snapshot. They update inventory
+	// ownership only and must never mutate current port status/VLAN fields.
+	if s.switchPorts != nil && normalized.SwitchID != "" && normalized.IfIndex > 0 && normalized.EventType != "mac_learned" && normalized.EventType != "mac_removed" {
 		_, err = s.switchPorts.UpdateStatus(
 			ctx,
 			normalized.SwitchID,
@@ -65,7 +118,11 @@ func (s *Service) Ingest(ctx context.Context, event domain.Event) (domain.Event,
 		}
 	}
 
-	if s.devices != nil && normalized.MACAddress != "" {
+	if s.devices != nil && normalized.MACAddress != "" && normalized.EventType == "mac_removed" {
+		if _, err = s.devices.DetachAgentlessEvent(ctx, normalized.MACAddress, normalized.SwitchID, normalized.IfIndex, normalized.ObservedAt); err != nil {
+			return domain.Event{}, err
+		}
+	} else if s.devices != nil && normalized.MACAddress != "" {
 		device, err := s.devices.ObserveAgentlessEvent(ctx, devicedomain.AgentlessObservationInput{
 			MACAddress:           normalized.MACAddress,
 			IPAddress:            normalized.IPAddress,
@@ -106,6 +163,19 @@ func (s *Service) Ingest(ctx context.Context, event domain.Event) (domain.Event,
 			"trust_level":   stored.TrustLevel,
 		})
 	}
+	if claimed {
+		inbox := s.repository.(interface {
+			BeginIngest(context.Context, string) (string, error)
+			CompleteIngest(context.Context, string) error
+			FailIngest(context.Context, string, string) error
+		})
+		// From this point side effects are durable. Do not mark the claim failed
+		// if acknowledgement itself fails, because that could replay them.
+		claimed = false
+		if err = inbox.CompleteIngest(ctx, normalized.ID); err != nil {
+			return domain.Event{}, err
+		}
+	}
 
 	return stored, nil
 }
@@ -115,6 +185,16 @@ func (s *Service) ListRecent(ctx context.Context, limit int) ([]domain.Event, er
 		return []domain.Event{}, nil
 	}
 	return s.repository.ListRecent(ctx, limit)
+}
+
+func (s *Service) Feed(ctx context.Context, switchID, after string) (domain.Feed, error) {
+	reader, ok := s.repository.(interface {
+		Feed(context.Context, string, string) (domain.Feed, error)
+	})
+	if !ok {
+		return domain.Feed{}, fmt.Errorf("port event feed is not configured")
+	}
+	return reader.Feed(ctx, switchID, after)
 }
 
 func (s *Service) normalizeEvent(event domain.Event) (domain.Event, error) {

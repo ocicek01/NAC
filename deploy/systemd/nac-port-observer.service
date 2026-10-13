@@ -1,0 +1,24 @@
+[Unit]
+Description=NAC switch port observer
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nac
+Group=nac
+WorkingDirectory=/opt/nac
+EnvironmentFile=/opt/nac/.env
+ExecStart=/opt/nac/bin/nac-port-observer
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=40
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

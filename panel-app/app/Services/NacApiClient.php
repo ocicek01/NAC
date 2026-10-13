@@ -108,6 +108,19 @@ class NacApiClient
         return $this->optionalGet('/api/v1/port-events?limit='.max(1, $limit));
     }
 
+    public function observerPortEvents(string $switchId, ?string $cursor): array
+    {
+        $query = ['switch_id' => $switchId];
+        if ($cursor !== null) {
+            $query['after'] = $cursor;
+        }
+        // Failure must close SSE so the browser enters snapshot fallback.
+        $response = $this->baseClient()->acceptJson()->timeout(5)
+            ->get('/api/v1/port-events/feed', $query);
+        $response->throw();
+        return $response->json();
+    }
+
     public function auditLogs(int $limit = 20): array
     {
         return $this->optionalGet('/api/v1/audit-logs?limit='.max(1, $limit));

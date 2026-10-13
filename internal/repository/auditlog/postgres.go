@@ -4,16 +4,22 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	domain "nac/internal/domain/auditlog"
 )
 
-type PostgresRepository struct {
-	pool *pgxpool.Pool
+type DB interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	Query(context.Context, string, ...any) (pgx.Rows, error)
 }
 
-func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository {
+type PostgresRepository struct {
+	pool DB
+}
+
+func NewPostgresRepository(pool DB) *PostgresRepository {
 	return &PostgresRepository{pool: pool}
 }
 

@@ -523,6 +523,34 @@ func (s *stubDeviceRepository) UpdateEnforcementState(ctx context.Context, macAd
 func (s *stubDeviceRepository) UpdateIPLearningState(ctx context.Context, macAddress, switchID string, ifIndex int, state string, startedAt, learnedAt, lastBounceAt time.Time) error {
 	return nil
 }
+func (s *stubDeviceRepository) DetachIfCurrent(ctx context.Context, macAddress, switchID string, ifIndex int, observedAt time.Time) (bool, error) {
+	items := s.byMAC[macAddress]
+	if len(items) == 0 || items[0].CurrentSwitchID != switchID || items[0].CurrentIfIndex != ifIndex || items[0].LastSeenAt.After(observedAt) {
+		return false, nil
+	}
+	item := items[0]
+	item.CurrentSwitchID, item.CurrentSwitchName, item.CurrentManagementIP = "", "", ""
+	item.CurrentIfIndex, item.CurrentInterfaceName, item.CurrentInterfaceDescription = 0, "", ""
+	items[0] = item
+	s.byMAC[macAddress] = items
+	return true, nil
+}
+
+func TestDetachAgentlessEventOnlyClearsMatchingCurrentAttachment(t *testing.T) {
+	observed := time.Date(2026, 10, 13, 10, 0, 0, 0, time.UTC)
+	repo := &stubDeviceRepository{byMAC: map[string][]devicedomain.Device{
+		"AA:BB:CC:DD:EE:FF": {{MACAddress: "AA:BB:CC:DD:EE:FF", CurrentSwitchID: "sw-new", CurrentIfIndex: 9, LastSeenAt: observed.Add(time.Minute)}},
+	}}
+	service := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, 0, false, false, 0, 0, 0, false, 0)
+	detached, err := service.DetachAgentlessEvent(context.Background(), "aa-bb-cc-dd-ee-ff", "sw-old", 3, observed)
+	if err != nil || detached {
+		t.Fatalf("stale removal detached newer attachment: detached=%v err=%v", detached, err)
+	}
+	detached, err = service.DetachAgentlessEvent(context.Background(), "aa-bb-cc-dd-ee-ff", "sw-new", 9, observed.Add(2*time.Minute))
+	if err != nil || !detached || repo.byMAC["AA:BB:CC:DD:EE:FF"][0].CurrentIfIndex != 0 {
+		t.Fatalf("matching attachment was not detached: detached=%v err=%v", detached, err)
+	}
+}
 
 type statusByIDCall struct {
 	DeviceID        string

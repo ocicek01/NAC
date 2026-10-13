@@ -123,11 +123,13 @@ Artisan::command('nac:listen-snmp-traps {--host=} {--port=} {--max-packets=}', f
     return 0;
 })->purpose('Listen for SNMP traps over UDP and update switch_ports');
 
-Schedule::command('nac:poll-port-status')
-    ->everyThirtySeconds()
-    ->withoutOverlapping();
+if (! config('services.nac.port_observer_enabled', false)) {
+    Schedule::command('nac:poll-port-status')
+        ->everyThirtySeconds()
+        ->withoutOverlapping();
+}
 
-if ((bool) config('services.nac.discovery_schedule_enabled', true)) {
+if (! config('services.nac.port_observer_enabled', false) && (bool) config('services.nac.discovery_schedule_enabled', true)) {
     $discoveryFrequencyMinutes = max(1, (int) config('services.nac.discovery_schedule_minutes', 10));
 
     Schedule::command('nac:discover-ports')

@@ -22,6 +22,7 @@ const (
 	oidIfName            = ".1.3.6.1.2.1.31.1.1.1.1"
 	oidIfAlias           = ".1.3.6.1.2.1.31.1.1.1.18"
 	oidIfDescr           = ".1.3.6.1.2.1.2.2.1.2"
+	oidIfType            = ".1.3.6.1.2.1.2.2.1.3"
 	oidIfAdminStatus     = ".1.3.6.1.2.1.2.2.1.7"
 	oidIfOperStatus      = ".1.3.6.1.2.1.2.2.1.8"
 	oidLldpLocPortDesc   = ".1.0.8802.1.1.2.1.3.7.1.4"

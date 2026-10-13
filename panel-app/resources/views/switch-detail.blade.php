@@ -1065,7 +1065,7 @@
         const switchPortActionUrlTemplate = @json(url('/switch-ports/__PORT__/actions'));
         const portStatusUrl = switchId ? '/api/switches/' + switchId + '/ports/status' : null;
         const portDetailsUrl = switchId ? '/api/switches/' + switchId + '/ports' : null;
-        const portEventsUrl = '/api/events/ports';
+        const portEventsUrl = '/api/events/ports?switch_id=' + encodeURIComponent(switchId);
         const switchPortRefreshUrlTemplate = '/api/switch-ports/__PORT__/refresh-live';
         const portAllowForm = document.getElementById('port-allow-form');
         const tabLinks = Array.from(document.querySelectorAll('[data-tab]'));
@@ -1513,7 +1513,6 @@
                 activateTab('map');
                 updateSelectedPort(portId);
                 refreshPortDetail(portId).catch(function () {});
-                requestPortSnapshotRefresh(portId);
             });
         }
         function mergePortData(portId, patch) {
@@ -1538,6 +1537,7 @@
             preferCurrentWhenPlaceholder.forEach(function (field) {
                 const incoming = String(next[field] ?? '').trim();
                 const existing = String(current[field] ?? '').trim();
+                if (field === 'mac' && patch?.observer_snapshot) { return; }
                 if ((incoming === '' || incoming === '-') && existing !== '' && existing !== '-') {
                     next[field] = current[field];
                 }
@@ -1545,10 +1545,15 @@
 
             const incomingMacCount = Number(next.macCount ?? 0);
             const existingMacCount = Number(current.macCount ?? 0);
-            if (Number.isFinite(existingMacCount) && existingMacCount > incomingMacCount) {
+            if (!patch?.observer_snapshot && Number.isFinite(existingMacCount) && existingMacCount > incomingMacCount) {
                 next.macCount = existingMacCount;
             }
 
+            if (current.observer_snapshot && !patch?.observer_snapshot) {
+                ['mac', 'macCount', 'mac_addresses', 'vlan', 'vlanLabel', 'admin_status', 'oper_status', 'state', 'statusText', 'lastSeen', 'lastChange'].forEach(function (field) {
+                    next[field] = current[field];
+                });
+            }
             portMap[key] = next;
             renderPortListTable();
         }
@@ -1833,7 +1838,16 @@
             }
 
             const liveState = liveStateForPort(statusItem);
-            mergePortData(portId, {
+            const observed = statusItem.status_source === 'port-observer';
+            const observation = observed ? {
+                observer_snapshot: true,
+                vlan: String(statusItem.vlan_id),
+                vlanLabel: String(statusItem.vlan_id),
+                mac: (statusItem.mac_addresses || [])[0] || '-',
+                macCount: statusItem.mac_count,
+                mac_addresses: statusItem.mac_addresses || [],
+            } : {};
+            mergePortData(portId, Object.assign(observation, {
                 if_index: statusItem.if_index,
                 if_name: statusItem.if_name,
                 admin_status: statusItem.admin_status,
@@ -1844,7 +1858,7 @@
                 statusText: liveStatusText(liveState),
                 lastSeen: statusItem.last_seen ? new Date(statusItem.last_seen).toLocaleString('tr-TR') : (portMap[portId].lastSeen || '-'),
                 lastChange: statusItem.last_change ? new Date(statusItem.last_change).toLocaleTimeString('tr-TR') : (portMap[portId].lastChange || '-'),
-            });
+            }));
 
             applyPortStateToTile(portId, liveState);
 
@@ -1856,7 +1870,26 @@
             }
         }
 
+        let portStreamConnected = false;
+        let portStatusLoading = false;
+        let portStatusFallbackHandle = null;
+        function startPortStatusFallback() {
+            portStatusFallbackHandle = window.setInterval(function () {
+                // SSE carries low-latency deltas; the periodic full snapshot is
+                // still required to reconcile trap/refresh races and reconnect gaps.
+                if (!document.hidden) {
+                    loadPortStatuses().catch(console.error);
+                }
+            }, 15000);
+        }
+
         async function loadPortStatuses() {
+            if (portStatusLoading) { return; }
+            portStatusLoading = true;
+            try { await fetchPortStatuses(); } finally { portStatusLoading = false; }
+        }
+
+        async function fetchPortStatuses() {
             if (!portStatusUrl) {
                 return;
             }
@@ -1887,6 +1920,21 @@
             }
 
             const source = new EventSource(portEventsUrl);
+            source.onopen = function () { portStreamConnected = true; };
+            source.onerror = function () { portStreamConnected = false; };
+            source.addEventListener('observer_ready', function () {
+                loadPortStatuses().catch(console.error);
+            });
+            source.addEventListener('port_snapshot_batch', function (event) {
+                try {
+                    const batch = JSON.parse(event.data);
+                    (batch.ports || []).forEach(mergePortStatus);
+                } catch (error) { console.error(error); }
+            });
+            window.addEventListener('pagehide', function () {
+                source.close();
+                window.clearInterval(portStatusFallbackHandle);
+            }, { once: true });
             source.addEventListener('port_status_changed', function (event) {
                 try {
                     const payload = JSON.parse(event.data || '{}');
@@ -1945,29 +1993,6 @@
             });
         }
 
-        function requestPortSnapshotRefresh(portId) {
-            if (!portId) {
-                return;
-            }
-
-            fetch(switchPortRefreshUrlTemplate.replace('__PORT__', encodeURIComponent(String(portId))), {
-                method: 'POST',
-                headers: {
-                    'Accept': 'application/json',
-                    'X-Requested-With': 'XMLHttpRequest'
-                }
-            }).then(function () {
-                [750, 1500, 3000, 5000].forEach(function (delay) {
-                    window.setTimeout(function () {
-                        refreshPortDetail(portId, { fresh: true }).catch(function (error) {
-                            console.error(error);
-                        });
-                    }, delay);
-                });
-            }).catch(function (error) {
-                console.error(error);
-            });
-        }
         function openSubmenu(name, trigger) {
             const submenu = document.getElementById('portSubmenu-' + name);
             if (!submenu) {
@@ -2026,7 +2051,6 @@
             tile.addEventListener('click', function () {
                 updateSelectedPort(tile.dataset.portId);
                 refreshPortDetail(tile.dataset.portId).catch(function () {});
-                requestPortSnapshotRefresh(tile.dataset.portId);
                 hideContextMenu();
             });
 
@@ -2189,7 +2213,6 @@
         if (portMap[String(currentSelectedPortId)]) {
             syncPortActionForms(portMap[String(currentSelectedPortId)]);
             refreshPortDetail(currentSelectedPortId).catch(function () {});
-            requestPortSnapshotRefresh(currentSelectedPortId);
         }
         loadPortStatuses().catch(function (error) {
             console.error(error);
@@ -2198,7 +2221,7 @@
             console.error(error);
         });
         startPortStatusStream();
-        startSelectedPortDetailSync();
+        startPortStatusFallback();
         window.addEventListener('scroll', hideContextMenu, true);
         window.addEventListener('resize', hideContextMenu);
     </script>

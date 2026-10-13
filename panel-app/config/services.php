@@ -36,6 +36,7 @@ return [
     ],
 
     'nac' => [
+        'port_observer_enabled' => env('NAC_PORT_OBSERVER_ENABLED', false),
         'base_url' => env('NAC_API_URL', 'http://127.0.0.1:8080'),
         'timeout' => env('NAC_API_TIMEOUT', 10),
         'long_timeout' => env('NAC_API_LONG_TIMEOUT', 120),

@@ -728,22 +728,22 @@ func (r *PostgresRepository) Upsert(ctx context.Context, device domain.Device) (
 				ELSE devices.last_policy_decision
 			END,
 			last_policy_evaluated_at = COALESCE(EXCLUDED.last_policy_evaluated_at, devices.last_policy_evaluated_at),
-			current_switch_id = EXCLUDED.current_switch_id,
-			current_switch_name = EXCLUDED.current_switch_name,
-			current_management_ip = EXCLUDED.current_management_ip,
-			current_bridge_port = EXCLUDED.current_bridge_port,
-			current_if_index = EXCLUDED.current_if_index,
-			current_interface_name = EXCLUDED.current_interface_name,
-			current_interface_description = EXCLUDED.current_interface_description,
-			current_source_type = EXCLUDED.current_source_type,
-			current_confidence = EXCLUDED.current_confidence,
+			current_switch_id = CASE WHEN devices.last_seen_at IS NULL OR EXCLUDED.last_seen_at >= devices.last_seen_at THEN EXCLUDED.current_switch_id ELSE devices.current_switch_id END,
+			current_switch_name = CASE WHEN devices.last_seen_at IS NULL OR EXCLUDED.last_seen_at >= devices.last_seen_at THEN EXCLUDED.current_switch_name ELSE devices.current_switch_name END,
+			current_management_ip = CASE WHEN devices.last_seen_at IS NULL OR EXCLUDED.last_seen_at >= devices.last_seen_at THEN EXCLUDED.current_management_ip ELSE devices.current_management_ip END,
+			current_bridge_port = CASE WHEN devices.last_seen_at IS NULL OR EXCLUDED.last_seen_at >= devices.last_seen_at THEN EXCLUDED.current_bridge_port ELSE devices.current_bridge_port END,
+			current_if_index = CASE WHEN devices.last_seen_at IS NULL OR EXCLUDED.last_seen_at >= devices.last_seen_at THEN EXCLUDED.current_if_index ELSE devices.current_if_index END,
+			current_interface_name = CASE WHEN devices.last_seen_at IS NULL OR EXCLUDED.last_seen_at >= devices.last_seen_at THEN EXCLUDED.current_interface_name ELSE devices.current_interface_name END,
+			current_interface_description = CASE WHEN devices.last_seen_at IS NULL OR EXCLUDED.last_seen_at >= devices.last_seen_at THEN EXCLUDED.current_interface_description ELSE devices.current_interface_description END,
+			current_source_type = CASE WHEN devices.last_seen_at IS NULL OR EXCLUDED.last_seen_at >= devices.last_seen_at THEN EXCLUDED.current_source_type ELSE devices.current_source_type END,
+			current_confidence = CASE WHEN devices.last_seen_at IS NULL OR EXCLUDED.last_seen_at >= devices.last_seen_at THEN EXCLUDED.current_confidence ELSE devices.current_confidence END,
 			first_seen_at = COALESCE(devices.first_seen_at, EXCLUDED.first_seen_at),
 			last_seen_at = CASE
 				WHEN devices.last_seen_at IS NULL THEN EXCLUDED.last_seen_at
 				WHEN EXCLUDED.last_seen_at > devices.last_seen_at THEN EXCLUDED.last_seen_at
 				ELSE devices.last_seen_at
 			END,
-			updated_at = EXCLUDED.updated_at
+			updated_at = GREATEST(devices.updated_at, EXCLUDED.updated_at)
 		RETURNING
 			id,
 			mac_address,
@@ -1230,6 +1230,22 @@ func (r *PostgresRepository) ListBySwitchAndIfIndex(ctx context.Context, switchI
 	}
 
 	return devices, nil
+}
+
+// DetachIfCurrent clears only the attachment named by the removal event. The
+// last_seen guard prevents a delayed removal from clearing a newer attachment.
+func (r *PostgresRepository) DetachIfCurrent(ctx context.Context, macAddress, switchID string, ifIndex int, observedAt time.Time) (bool, error) {
+	tag, err := r.pool.Exec(ctx, `UPDATE devices SET
+		current_switch_id=NULL,current_switch_name='',current_management_ip=NULL,current_port_id=NULL,
+		current_bridge_port=0,current_if_index=0,current_interface_name='',current_interface_description='',
+		current_source_type='',current_confidence='',updated_at=NOW()
+		WHERE `+normalizedMACExpression("mac_address")+` = `+normalizedMACExpression("$1")+`
+		  AND current_switch_id=NULLIF($2,'')::uuid AND current_if_index=$3
+		  AND (last_seen_at IS NULL OR last_seen_at <= $4)`, macAddress, switchID, ifIndex, observedAt)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 func (r *PostgresRepository) UpdateStatus(ctx context.Context, macAddress, status, approvedBy, policyAction, policyReason string, approvedAt, expiresAt time.Time) (domain.Device, error) {
