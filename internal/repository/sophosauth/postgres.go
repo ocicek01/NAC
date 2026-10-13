@@ -3,6 +3,7 @@ package sophosauth
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -14,6 +15,11 @@ import (
 )
 
 type PostgresRepository struct{ pool *pgxpool.Pool }
+
+type postgresEffects struct {
+	tx    pgx.Tx
+	claim domain.Claim
+}
 
 func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository {
 	return &PostgresRepository{pool: pool}
@@ -28,16 +34,17 @@ func (r *PostgresRepository) InsertEvent(ctx context.Context, event domain.Event
 		INSERT INTO sophos_auth_events (
 			id, fingerprint, event_type, message_id, username, user_group,
 			client_used, auth_mechanism, auth_status, source_ip, source_mac,
-			correlated_mac, correlation_status, metadata, event_at, received_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULLIF($10,'')::inet,$11,$12,$13,$14,$15,$16)
+			correlated_mac, correlation_status, processing_status, metadata, event_at, received_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULLIF($10,'')::inet,$11,$12,$13,$14,$15,$16,$17)
 		ON CONFLICT (fingerprint) DO NOTHING
 		RETURNING id, fingerprint, event_type, message_id, username, user_group,
 			client_used, auth_mechanism, auth_status, COALESCE(host(source_ip),''),
-			source_mac, correlated_mac, correlation_status, metadata, event_at, received_at
+			source_mac, correlated_mac, correlation_status, processing_status,
+			attempt_count, last_error, next_attempt_at, processed_at, metadata, event_at, received_at
 	`, event.ID, event.Fingerprint, event.EventType, event.MessageID, event.Username,
 		event.UserGroup, event.ClientUsed, event.AuthMechanism, event.AuthStatus,
 		event.SourceIP, event.SourceMAC, event.CorrelatedMAC, event.CorrelationStatus,
-		metadata, event.EventAt, event.ReceivedAt))
+		processingStatus(event), metadata, event.EventAt, event.ReceivedAt))
 	if err == pgx.ErrNoRows {
 		stored, findErr := r.findEventByFingerprint(ctx, event.Fingerprint)
 		return stored, false, findErr
@@ -45,12 +52,132 @@ func (r *PostgresRepository) InsertEvent(ctx context.Context, event domain.Event
 	return stored, err == nil, err
 }
 
-func (r *PostgresRepository) UpdateEventCorrelation(ctx context.Context, id, status, macAddress string, metadata map[string]any) error {
+func processingStatus(event domain.Event) string {
+	if event.EventType == "ignored" {
+		return "ignored"
+	}
+	return "pending"
+}
+
+func (r *PostgresRepository) ClaimEvent(ctx context.Context, fingerprint string, now time.Time, lease time.Duration, maxAttempts int) (domain.Claim, bool, error) {
+	return r.claimOne(ctx, fingerprint, now, lease, maxAttempts)
+}
+
+func (r *PostgresRepository) ClaimDueEvents(ctx context.Context, now time.Time, lease time.Duration, maxAttempts, limit int) ([]domain.Claim, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 20
+	}
+	claims := make([]domain.Claim, 0, limit)
+	for len(claims) < limit {
+		claim, ok, err := r.claimOne(ctx, "", now, lease, maxAttempts)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			break
+		}
+		claims = append(claims, claim)
+	}
+	return claims, nil
+}
+
+func (r *PostgresRepository) claimOne(ctx context.Context, fingerprint string, now time.Time, lease time.Duration, maxAttempts int) (domain.Claim, bool, error) {
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	token := uuid.NewString()
+	event, err := scanEvent(r.pool.QueryRow(ctx, `
+		WITH candidate AS (
+			SELECT id FROM sophos_auth_events
+			WHERE ($1='' OR fingerprint=$1)
+			  AND attempt_count < $5
+			  AND (
+				processing_status='pending'
+				OR (processing_status='retry' AND COALESCE(next_attempt_at, $2) <= $2)
+				OR (processing_status='processing' AND lease_until < $2)
+			  )
+			ORDER BY received_at
+			FOR UPDATE SKIP LOCKED LIMIT 1
+		)
+		UPDATE sophos_auth_events e
+		SET processing_status='processing', attempt_count=attempt_count+1,
+			lease_token=$3, lease_until=$2+$4::interval, last_error='', updated_at=$2
+		FROM candidate WHERE e.id=candidate.id
+		RETURNING e.id, e.fingerprint, e.event_type, e.message_id, e.username, e.user_group,
+			e.client_used, e.auth_mechanism, e.auth_status, COALESCE(host(e.source_ip),''),
+			e.source_mac, e.correlated_mac, e.correlation_status, e.processing_status,
+			e.attempt_count, e.last_error, e.next_attempt_at, e.processed_at,
+			e.metadata, e.event_at, e.received_at
+	`, strings.TrimSpace(fingerprint), now, token, intervalLiteral(lease), maxAttempts))
+	if err == pgx.ErrNoRows {
+		return domain.Claim{}, false, nil
+	}
+	if err != nil {
+		return domain.Claim{}, false, err
+	}
+	return domain.Claim{Event: event, Token: token}, true, nil
+}
+
+func intervalLiteral(value time.Duration) string {
+	if value <= 0 {
+		value = time.Minute
+	}
+	return fmt.Sprintf("%f seconds", value.Seconds())
+}
+
+func (r *PostgresRepository) BeginEffects(ctx context.Context, claim domain.Claim) (domain.Effects, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var valid bool
+	err = tx.QueryRow(ctx, `
+		SELECT true FROM sophos_auth_events
+		WHERE id=$1 AND processing_status='processing' AND lease_token=$2 AND lease_until >= NOW()
+		FOR UPDATE
+	`, claim.Event.ID, claim.Token).Scan(&valid)
+	if err != nil || !valid {
+		_ = tx.Rollback(ctx)
+		if err == pgx.ErrNoRows {
+			return nil, fmt.Errorf("Sophos auth event claim is no longer valid")
+		}
+		return nil, err
+	}
+	return &postgresEffects{tx: tx, claim: claim}, nil
+}
+
+func (r *PostgresRepository) MarkFailed(ctx context.Context, claim domain.Claim, message string, nextAttempt time.Time, maxAttempts int) error {
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE sophos_auth_events SET
+			processing_status=CASE WHEN attempt_count >= $5 THEN 'dead_letter' ELSE 'retry' END,
+			last_error=$3,
+			next_attempt_at=CASE WHEN attempt_count >= $5 THEN NULL ELSE $4 END,
+			lease_token='', lease_until=NULL, updated_at=NOW()
+		WHERE id=$1 AND processing_status='processing' AND lease_token=$2
+	`, claim.Event.ID, claim.Token, truncateError(message), nextAttempt, maxAttempts)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("Sophos auth event claim was lost before failure state persisted")
+	}
+	return nil
+}
+
+func truncateError(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) > 2000 {
+		return value[:2000]
+	}
+	return value
+}
+
+func (e *postgresEffects) UpdateEventCorrelation(ctx context.Context, id, status, macAddress string, metadata map[string]any) error {
 	payload, err := json.Marshal(metadata)
 	if err != nil {
 		return err
 	}
-	_, err = r.pool.Exec(ctx, `
+	_, err = e.tx.Exec(ctx, `
 		UPDATE sophos_auth_events
 		SET correlation_status=$2, correlated_mac=$3, metadata=metadata || $4::jsonb
 		WHERE id=$1
@@ -58,8 +185,8 @@ func (r *PostgresRepository) UpdateEventCorrelation(ctx context.Context, id, sta
 	return err
 }
 
-func (r *PostgresRepository) FindFreshMACsByIP(ctx context.Context, ipAddress string, since time.Time) ([]string, error) {
-	rows, err := r.pool.Query(ctx, `
+func (e *postgresEffects) FindFreshMACsByIP(ctx context.Context, ipAddress string, since time.Time) ([]string, error) {
+	rows, err := e.tx.Query(ctx, `
 		SELECT DISTINCT upper(mac_address)
 		FROM mac_ip_bindings
 		WHERE ip_address=NULLIF($1,'')::inet AND last_seen_at >= $2
@@ -80,9 +207,9 @@ func (r *PostgresRepository) FindFreshMACsByIP(ctx context.Context, ipAddress st
 	return items, rows.Err()
 }
 
-func (r *PostgresRepository) OpenSession(ctx context.Context, event domain.Event) (domain.Session, error) {
+func (e *postgresEffects) OpenSession(ctx context.Context, event domain.Event) (domain.Session, error) {
 	activeKey := strings.ToLower(strings.TrimSpace(event.Username)) + "|" + strings.TrimSpace(event.SourceIP)
-	return scanSession(r.pool.QueryRow(ctx, `
+	return scanSession(e.tx.QueryRow(ctx, `
 		INSERT INTO sophos_user_sessions (
 			id, active_key, username, user_group, ip_address, mac_address,
 			client_used, auth_mechanism, status, correlation_status,
@@ -105,8 +232,8 @@ func (r *PostgresRepository) OpenSession(ctx context.Context, event domain.Event
 		event.CorrelationStatus, event.EventAt, event.ReceivedAt))
 }
 
-func (r *PostgresRepository) CloseSessions(ctx context.Context, username, ipAddress string, endedAt time.Time) ([]domain.Session, error) {
-	rows, err := r.pool.Query(ctx, `
+func (e *postgresEffects) CloseSessions(ctx context.Context, username, ipAddress string, endedAt time.Time) ([]domain.Session, error) {
+	rows, err := e.tx.Query(ctx, `
 		UPDATE sophos_user_sessions
 		SET status='closed', active_key=NULL, ended_at=$3,
 			last_seen_at=GREATEST(last_seen_at,$3), updated_at=NOW()
@@ -131,8 +258,8 @@ func (r *PostgresRepository) CloseSessions(ctx context.Context, username, ipAddr
 	return items, rows.Err()
 }
 
-func (r *PostgresRepository) SetDeviceIdentity(ctx context.Context, macAddress, username, ipAddress string, seenAt time.Time) error {
-	_, err := r.pool.Exec(ctx, `
+func (e *postgresEffects) SetDeviceIdentity(ctx context.Context, macAddress, username, ipAddress string, seenAt time.Time) error {
+	_, err := e.tx.Exec(ctx, `
 		UPDATE devices SET sophos_username=$2, sophos_last_ip=NULLIF($3,'')::inet,
 			sophos_last_seen_at=$4, authentication_status='captive-authenticated',
 			authentication_method='sophos_captive_portal', updated_at=NOW()
@@ -142,8 +269,8 @@ func (r *PostgresRepository) SetDeviceIdentity(ctx context.Context, macAddress, 
 	return err
 }
 
-func (r *PostgresRepository) ClearDeviceIdentityIfMatch(ctx context.Context, macAddress, username, ipAddress string, logoutAt time.Time) error {
-	_, err := r.pool.Exec(ctx, `
+func (e *postgresEffects) ClearDeviceIdentityIfMatch(ctx context.Context, macAddress, username, ipAddress string, logoutAt time.Time) error {
+	_, err := e.tx.Exec(ctx, `
 		UPDATE devices SET sophos_username='', sophos_last_ip=NULL,
 			sophos_last_seen_at=$4,
 			authentication_status=CASE WHEN authentication_status='captive-authenticated' THEN 'not_attempted' ELSE authentication_status END,
@@ -156,12 +283,51 @@ func (r *PostgresRepository) ClearDeviceIdentityIfMatch(ctx context.Context, mac
 	return err
 }
 
+func (e *postgresEffects) RecordAudit(ctx context.Context, action, status, eventID, macAddress string, payload map[string]any) error {
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	_, err = e.tx.Exec(ctx, `
+		INSERT INTO audit_logs (
+			id, actor, action, status, target_type, target_id, mac_address, payload, created_at
+		) VALUES ($1,'system',$2,$3,'sophos_captive_session',$4,$5,$6::jsonb,NOW())
+	`, uuid.NewString(), action, status, eventID, macAddress, encoded)
+	return err
+}
+
+func (e *postgresEffects) Complete(ctx context.Context) error {
+	tag, err := e.tx.Exec(ctx, `
+		UPDATE sophos_auth_events SET processing_status='completed', processed_at=NOW(),
+			next_attempt_at=NULL, lease_token='', lease_until=NULL, last_error='', updated_at=NOW()
+		WHERE id=$1 AND processing_status='processing' AND lease_token=$2
+	`, e.claim.Event.ID, e.claim.Token)
+	if err != nil {
+		_ = e.tx.Rollback(ctx)
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		_ = e.tx.Rollback(ctx)
+		return fmt.Errorf("Sophos auth event claim was lost before completion")
+	}
+	return e.tx.Commit(ctx)
+}
+
+func (e *postgresEffects) Rollback(ctx context.Context) error {
+	err := e.tx.Rollback(ctx)
+	if err == pgx.ErrTxClosed {
+		return nil
+	}
+	return err
+}
+
 func (r *PostgresRepository) ListEvents(ctx context.Context, limit, offset int) ([]domain.Event, error) {
 	limit, offset = bounds(limit, offset)
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, fingerprint, event_type, message_id, username, user_group,
 			client_used, auth_mechanism, auth_status, COALESCE(host(source_ip),''),
-			source_mac, correlated_mac, correlation_status, metadata, event_at, received_at
+			source_mac, correlated_mac, correlation_status, processing_status,
+			attempt_count, last_error, next_attempt_at, processed_at, metadata, event_at, received_at
 		FROM sophos_auth_events ORDER BY received_at DESC LIMIT $1 OFFSET $2
 	`, limit, offset)
 	if err != nil {
@@ -207,9 +373,12 @@ func (r *PostgresRepository) Health(ctx context.Context, enabled bool, bindAddre
 	err := r.pool.QueryRow(ctx, `
 		SELECT count(*) FILTER (WHERE correlation_status='uncorrelated'),
 			count(*) FILTER (WHERE correlation_status='ambiguous'),
-			max(event_at), max(event_at) FILTER (WHERE correlation_status='correlated')
+			max(event_at), max(event_at) FILTER (WHERE correlation_status='correlated'),
+			count(*) FILTER (WHERE processing_status IN ('pending','retry','processing')),
+			count(*) FILTER (WHERE processing_status='dead_letter')
 		FROM sophos_auth_events
-	`).Scan(&health.Uncorrelated, &health.Ambiguous, &health.LastEventAt, &health.LastCorrelatedAt)
+	`).Scan(&health.Uncorrelated, &health.Ambiguous, &health.LastEventAt, &health.LastCorrelatedAt,
+		&health.RetryPending, &health.DeadLetter)
 	if err != nil {
 		// Active session count needs a separate aggregate to avoid a cross product.
 		return domain.Health{}, err
@@ -222,7 +391,8 @@ func (r *PostgresRepository) findEventByFingerprint(ctx context.Context, fingerp
 	return scanEvent(r.pool.QueryRow(ctx, `
 		SELECT id, fingerprint, event_type, message_id, username, user_group,
 			client_used, auth_mechanism, auth_status, COALESCE(host(source_ip),''),
-			source_mac, correlated_mac, correlation_status, metadata, event_at, received_at
+			source_mac, correlated_mac, correlation_status, processing_status,
+			attempt_count, last_error, next_attempt_at, processed_at, metadata, event_at, received_at
 		FROM sophos_auth_events WHERE fingerprint=$1
 	`, fingerprint))
 }
@@ -234,7 +404,9 @@ func scanEvent(row scanner) (domain.Event, error) {
 	err := row.Scan(&item.ID, &item.Fingerprint, &item.EventType, &item.MessageID,
 		&item.Username, &item.UserGroup, &item.ClientUsed, &item.AuthMechanism,
 		&item.AuthStatus, &item.SourceIP, &item.SourceMAC, &item.CorrelatedMAC,
-		&item.CorrelationStatus, &item.Metadata, &item.EventAt, &item.ReceivedAt)
+		&item.CorrelationStatus, &item.ProcessingStatus, &item.AttemptCount,
+		&item.LastError, &item.NextAttemptAt, &item.ProcessedAt, &item.Metadata,
+		&item.EventAt, &item.ReceivedAt)
 	return item, err
 }
 

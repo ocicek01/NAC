@@ -60,9 +60,10 @@ install -d -m 0750 -o root -g freerad /etc/nac
 install -m 0640 -o root -g freerad deploy/freeradius/radius-helper.env.example /etc/nac/radius-helper.env
 ```
 
-`NAC_RADIUS_API_TOKEN` uzun ve rastgele olmalidir. Degisken bos birakildiginda
-eski kurulumlar icin endpointler tokensiz calismaya devam eder; bu yalnizca
-gecis uyumlulugudur. Production'da ayni token hem `nac-api.service` hem
+`NAC_RADIUS_API_TOKEN` uzun ve rastgele olmalidir. Endpointler token bosken
+fail-closed davranir ve istekleri islemez. Helper entegrasyonu etkinlestirilirken
+NAC API ortaminda `RADIUS_HELPER_ENABLED=true` ayarlanir; bu durumda token bos
+ise API startup islemi de reddedilir. Ayni token hem `nac-api.service` hem
 FreeRADIUS environment dosyasinda mutlaka tanimli olmalidir.
 
 Sablonlari render ettikten sonra:

@@ -16,9 +16,19 @@ type Event struct {
 	SourceMAC         string         `json:"source_mac"`
 	CorrelatedMAC     string         `json:"correlated_mac"`
 	CorrelationStatus string         `json:"correlation_status"`
+	ProcessingStatus  string         `json:"processing_status"`
+	AttemptCount      int            `json:"attempt_count"`
+	LastError         string         `json:"last_error"`
+	NextAttemptAt     *time.Time     `json:"next_attempt_at"`
+	ProcessedAt       *time.Time     `json:"processed_at"`
 	Metadata          map[string]any `json:"metadata"`
 	EventAt           time.Time      `json:"event_at"`
 	ReceivedAt        time.Time      `json:"received_at"`
+}
+
+type Claim struct {
+	Event Event
+	Token string
 }
 
 type Session struct {
@@ -63,4 +73,6 @@ type Health struct {
 	Ambiguous        int        `json:"ambiguous_events"`
 	LastEventAt      *time.Time `json:"last_event_at"`
 	LastCorrelatedAt *time.Time `json:"last_correlated_at"`
+	RetryPending     int        `json:"retry_pending"`
+	DeadLetter       int        `json:"dead_letter"`
 }

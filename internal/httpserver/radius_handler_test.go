@@ -32,8 +32,9 @@ func (s *radiusHandlerService) Accounting(context.Context, domain.AccountingRequ
 
 func TestRadiusAccountingHandlerMapsPersistenceErrorToServerError(t *testing.T) {
 	mux := http.NewServeMux()
-	registerRadiusRoutes(mux, &radiusHandlerService{accountingErr: errors.New("database unavailable")}, "")
+	registerRadiusRoutes(mux, &radiusHandlerService{accountingErr: errors.New("database unavailable")}, "shared-token")
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/radius/accounting", strings.NewReader(`{"acct_status_type":"Start"}`))
+	req.Header.Set("Authorization", "Bearer shared-token")
 	recorder := httptest.NewRecorder()
 
 	mux.ServeHTTP(recorder, req)
@@ -48,8 +49,9 @@ func TestRadiusAccountingHandlerMapsPersistenceErrorToServerError(t *testing.T) 
 
 func TestRadiusAccountingHandlerMapsValidationErrorToBadRequest(t *testing.T) {
 	mux := http.NewServeMux()
-	registerRadiusRoutes(mux, &radiusHandlerService{accountingErr: domain.ValidationError{Field: "acct_session_id", Message: "is required"}}, "")
+	registerRadiusRoutes(mux, &radiusHandlerService{accountingErr: domain.ValidationError{Field: "acct_session_id", Message: "is required"}}, "shared-token")
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/radius/accounting", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer shared-token")
 	recorder := httptest.NewRecorder()
 
 	mux.ServeHTTP(recorder, req)
@@ -61,8 +63,9 @@ func TestRadiusAccountingHandlerMapsValidationErrorToBadRequest(t *testing.T) {
 
 func TestRadiusAccountingHandlerMapsBusyClaimToServiceUnavailable(t *testing.T) {
 	mux := http.NewServeMux()
-	registerRadiusRoutes(mux, &radiusHandlerService{accountingErr: domain.ErrAccountingInProgress}, "")
+	registerRadiusRoutes(mux, &radiusHandlerService{accountingErr: domain.ErrAccountingInProgress}, "shared-token")
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/radius/accounting", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer shared-token")
 	recorder := httptest.NewRecorder()
 
 	mux.ServeHTTP(recorder, req)
@@ -118,16 +121,24 @@ func TestRadiusAPITokenAuthentication(t *testing.T) {
 	}
 }
 
-func TestRadiusAPITokenUnsetPreservesCompatibility(t *testing.T) {
-	service := &radiusHandlerService{}
-	mux := http.NewServeMux()
-	registerRadiusRoutes(mux, service, "")
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/radius/authorize", strings.NewReader(`{}`))
-	recorder := httptest.NewRecorder()
+func TestRadiusAPITokenUnsetFailsClosed(t *testing.T) {
+	for _, path := range []string{"/api/v1/radius/authorize", "/api/v1/radius/accounting"} {
+		t.Run(path, func(t *testing.T) {
+			service := &radiusHandlerService{}
+			mux := http.NewServeMux()
+			registerRadiusRoutes(mux, service, "")
+			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
+			req.Header.Set("Authorization", "Bearer attacker-controlled")
+			recorder := httptest.NewRecorder()
 
-	mux.ServeHTTP(recorder, req)
+			mux.ServeHTTP(recorder, req)
 
-	if recorder.Code != http.StatusOK || service.authorizeCalls != 1 {
-		t.Fatalf("status=%d authorize calls=%d", recorder.Code, service.authorizeCalls)
+			if recorder.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status=%d want=%d", recorder.Code, http.StatusServiceUnavailable)
+			}
+			if service.authorizeCalls != 0 || service.accountingCalls != 0 {
+				t.Fatalf("service was called: authorize=%d accounting=%d", service.authorizeCalls, service.accountingCalls)
+			}
+		})
 	}
 }

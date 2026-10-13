@@ -40,39 +40,47 @@ func (r *PostgresRepository) Enqueue(ctx context.Context, item domain.Item) (dom
 	return stored, err == nil, err
 }
 
-func (r *PostgresRepository) ClaimDue(ctx context.Context, now, leaseUntil time.Time, limit int) ([]domain.Item, error) {
-	if limit <= 0 || limit > 200 {
-		limit = 20
-	}
-	rows, err := r.pool.Query(ctx, `
+func (r *PostgresRepository) ClaimNext(ctx context.Context, now, leaseUntil time.Time) (domain.Item, bool, error) {
+	item, err := scanItem(r.pool.QueryRow(ctx, `
 		WITH due AS (
-			SELECT id FROM sophos_radius_sso_outbox
-			WHERE ((status IN ('pending','retry') AND next_attempt_at <= $1)
-				OR (status = 'processing' AND lease_until < $1))
-			ORDER BY next_attempt_at, created_at
-			FOR UPDATE SKIP LOCKED LIMIT $2
+			SELECT candidate.id
+			FROM sophos_radius_sso_outbox candidate
+			WHERE ((candidate.status IN ('pending','retry') AND candidate.next_attempt_at <= $1)
+				OR (candidate.status = 'processing' AND candidate.lease_until < $1))
+			AND NOT EXISTS (
+				SELECT 1
+				FROM sophos_radius_sso_outbox predecessor
+				WHERE predecessor.acct_session_id = candidate.acct_session_id
+				  AND predecessor.id <> candidate.id
+				  AND predecessor.status NOT IN ('sent','dead_letter')
+				  AND (
+					predecessor.event_timestamp < candidate.event_timestamp
+					OR (predecessor.event_timestamp = candidate.event_timestamp AND
+						CASE predecessor.acct_status_type WHEN 'Start' THEN 1 WHEN 'Interim-Update' THEN 2 ELSE 3 END
+						< CASE candidate.acct_status_type WHEN 'Start' THEN 1 WHEN 'Interim-Update' THEN 2 ELSE 3 END)
+					OR (predecessor.event_timestamp = candidate.event_timestamp
+						AND predecessor.acct_status_type = candidate.acct_status_type
+						AND (predecessor.created_at, predecessor.id) < (candidate.created_at, candidate.id))
+				  )
+			)
+			ORDER BY candidate.next_attempt_at, candidate.event_timestamp,
+				CASE candidate.acct_status_type WHEN 'Start' THEN 1 WHEN 'Interim-Update' THEN 2 ELSE 3 END,
+				candidate.created_at, candidate.id
+			FOR UPDATE OF candidate SKIP LOCKED
+			LIMIT 1
 		)
 		UPDATE sophos_radius_sso_outbox o
-		SET status='processing', lease_until=$3, attempt_count=o.attempt_count+1, updated_at=$1
+		SET status='processing', lease_until=$2, attempt_count=o.attempt_count+1, updated_at=$1
 		FROM due WHERE o.id=due.id
 		RETURNING o.id, o.source_key, o.username, host(o.ip_address), o.mac_address,
 			o.acct_status_type, o.acct_session_id, o.event_timestamp, o.acct_delay_time,
 			o.status, o.attempt_count, o.next_attempt_at, o.lease_until, o.last_error,
 			o.created_at, o.updated_at, o.sent_at
-	`, now, limit, leaseUntil)
-	if err != nil {
-		return nil, err
+	`, now, leaseUntil))
+	if err == pgx.ErrNoRows {
+		return domain.Item{}, false, nil
 	}
-	defer rows.Close()
-	items := make([]domain.Item, 0, limit)
-	for rows.Next() {
-		item, err := scanItem(rows)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, item)
-	}
-	return items, rows.Err()
+	return item, err == nil, err
 }
 
 func (r *PostgresRepository) MarkSent(ctx context.Context, id string, leaseUntil, sentAt time.Time) error {

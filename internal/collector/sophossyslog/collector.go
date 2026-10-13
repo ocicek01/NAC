@@ -15,6 +15,7 @@ import (
 
 type processor interface {
 	Process(ctx context.Context, event domain.ParsedEvent) error
+	ProcessDue(ctx context.Context, limit int) error
 	RecordRejectedSource(ctx context.Context, sourceIP string)
 	RecordParseFailure(ctx context.Context, sourceIP string, err error)
 }
@@ -67,6 +68,7 @@ func (c *Collector) Start(ctx context.Context) error {
 	}
 	defer conn.Close()
 	c.logger.Info("Sophos syslog collector started", "addr", address)
+	go c.runRetries(ctx)
 	buffer := make([]byte, 65535)
 	for {
 		if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
@@ -83,6 +85,29 @@ func (c *Collector) Start(ctx context.Context) error {
 			return err
 		}
 		c.processDatagram(ctx, remote.IP, append([]byte(nil), buffer[:n]...))
+	}
+}
+
+func (c *Collector) runRetries(ctx context.Context) {
+	interval := time.Duration(c.cfg.RetryIntervalSec) * time.Second
+	if interval <= 0 {
+		interval = 2 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			timeout := time.Duration(c.cfg.ProcessingTimeoutSec) * time.Second
+			workerCtx, cancel := context.WithTimeout(ctx, timeout*time.Duration(max(1, c.cfg.RetryBatchSize)))
+			err := c.processor.ProcessDue(workerCtx, c.cfg.RetryBatchSize)
+			cancel()
+			if err != nil && ctx.Err() == nil {
+				c.logger.Warn("Sophos auth retry worker failed", "error", err)
+			}
+		}
 	}
 }
 

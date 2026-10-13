@@ -13,8 +13,30 @@ server nac {
 	authorize {
 		filter_username
 
-		# A MAC-formatted identity is MAB. It is authorized by NAC and never sent to LDAP.
-		if (&User-Name =~ /^(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$/) {
+		# Normalize common switch MAB identities before the NAC helper sees them.
+		# Supported forms: aa:bb:cc:dd:ee:ff, aa-bb-cc-dd-ee-ff,
+		# aabbccddeeff, and aabb.ccdd.eeff.
+		if (&User-Name =~ /^([0-9A-Fa-f]{2})[:-]([0-9A-Fa-f]{2})[:-]([0-9A-Fa-f]{2})[:-]([0-9A-Fa-f]{2})[:-]([0-9A-Fa-f]{2})[:-]([0-9A-Fa-f]{2})$/) {
+			update control {
+				Tmp-String-0 := "%{toupper:%{1}}:%{toupper:%{2}}:%{toupper:%{3}}:%{toupper:%{4}}:%{toupper:%{5}}:%{toupper:%{6}}"
+			}
+		}
+		elsif (&User-Name =~ /^([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})$/) {
+			update control {
+				Tmp-String-0 := "%{toupper:%{1}}:%{toupper:%{2}}:%{toupper:%{3}}:%{toupper:%{4}}:%{toupper:%{5}}:%{toupper:%{6}}"
+			}
+		}
+		elsif (&User-Name =~ /^([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})\.([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})\.([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})$/) {
+			update control {
+				Tmp-String-0 := "%{toupper:%{1}}:%{toupper:%{2}}:%{toupper:%{3}}:%{toupper:%{4}}:%{toupper:%{5}}:%{toupper:%{6}}"
+			}
+		}
+
+		if (&control:Tmp-String-0) {
+			update request {
+				User-Name := &control:Tmp-String-0
+				Calling-Station-Id := &control:Tmp-String-0
+			}
 			nac_mab_authorize
 			if (ok) {
 				accept

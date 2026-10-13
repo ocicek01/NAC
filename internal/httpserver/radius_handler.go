@@ -83,7 +83,9 @@ func registerRadiusRoutes(mux *http.ServeMux, service radiusService, apiToken st
 
 func authorizeRadiusRequest(w http.ResponseWriter, r *http.Request, apiToken string) bool {
 	if apiToken == "" {
-		return true
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		http.Error(w, "RADIUS API authentication is not configured", http.StatusServiceUnavailable)
+		return false
 	}
 
 	expected := sha256.Sum256([]byte("Bearer " + apiToken))

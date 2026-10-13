@@ -53,6 +53,7 @@ func (p *collectorProcessor) Process(context.Context, domain.ParsedEvent) error 
 	p.processed++
 	return nil
 }
+func (p *collectorProcessor) ProcessDue(context.Context, int) error             { return nil }
 func (p *collectorProcessor) RecordRejectedSource(context.Context, string)      { p.rejected++ }
 func (p *collectorProcessor) RecordParseFailure(context.Context, string, error) { p.failed++ }
 

@@ -19,4 +19,20 @@ func TestSophosSyslogRequiresSourceAllowlistWhenEnabled(t *testing.T) {
 	if cfg.SophosAuth.Port != 5514 || cfg.SophosAuth.BindingFreshnessSec != 600 || len(cfg.SophosAuth.AllowedClients) == 0 {
 		t.Fatalf("unexpected Sophos auth defaults: %#v", cfg.SophosAuth)
 	}
+	if cfg.SophosAuth.MaxAttempts != 5 || cfg.SophosAuth.RetryBatchSize != 20 || cfg.SophosAuth.ClaimLeaseSec != 30 {
+		t.Fatalf("unexpected Sophos auth retry defaults: %#v", cfg.SophosAuth)
+	}
+}
+
+func TestSophosSyslogRejectsLeaseShorterThanProcessingTimeout(t *testing.T) {
+	t.Setenv("POSTGRES_DB", "nac")
+	t.Setenv("POSTGRES_USER", "nac")
+	t.Setenv("SOPHOS_RADIUS_SSO_ENABLED", "false")
+	t.Setenv("SOPHOS_SYSLOG_ENABLED", "true")
+	t.Setenv("SOPHOS_SYSLOG_ALLOWED_SOURCES", "10.6.0.1")
+	t.Setenv("SOPHOS_SYSLOG_PROCESSING_TIMEOUT_SECONDS", "10")
+	t.Setenv("SOPHOS_SYSLOG_CLAIM_LEASE_SECONDS", "5")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected Sophos syslog claim lease validation error")
+	}
 }

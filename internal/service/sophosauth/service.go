@@ -65,27 +65,110 @@ func (s *Service) Process(ctx context.Context, parsed domain.ParsedEvent) error 
 		_, _, err := s.repository.InsertEvent(ctx, event)
 		return err
 	}
-	stored, inserted, err := s.repository.InsertEvent(ctx, event)
-	if err != nil || !inserted {
+	stored, _, err := s.repository.InsertEvent(ctx, event)
+	if err != nil {
 		return err
 	}
-	if event.EventType == "logout" {
-		return s.processLogout(ctx, stored)
+	if stored.EventType == "ignored" {
+		return nil
 	}
-	return s.processLogin(ctx, stored)
+	claim, claimed, err := s.repository.ClaimEvent(ctx, stored.Fingerprint, now, s.claimLease(), s.maxAttempts())
+	if err != nil || !claimed {
+		return err
+	}
+	return s.processClaim(ctx, claim)
 }
 
-func (s *Service) processLogin(ctx context.Context, event domain.Event) error {
-	macs, err := s.repository.FindFreshMACsByIP(ctx, event.SourceIP, event.EventAt.Add(-time.Duration(s.cfg.BindingFreshnessSec)*time.Second))
+func (s *Service) ProcessDue(ctx context.Context, limit int) error {
+	if !s.cfg.Enabled {
+		return nil
+	}
+	if limit <= 0 || limit > 200 {
+		limit = s.cfg.RetryBatchSize
+	}
+	for processed := 0; processed < limit; processed++ {
+		claims, err := s.repository.ClaimDueEvents(ctx, s.now().UTC(), s.claimLease(), s.maxAttempts(), 1)
+		if err != nil {
+			return err
+		}
+		if len(claims) == 0 {
+			return nil
+		}
+		if err := s.processClaim(ctx, claims[0]); err != nil {
+			// The failure is persisted for retry; continue so one poison event does not block the queue.
+			continue
+		}
+	}
+	return nil
+}
+
+func (s *Service) processClaim(ctx context.Context, claim domain.Claim) error {
+	effects, err := s.repository.BeginEffects(ctx, claim)
+	if err != nil {
+		return s.failClaim(claim, err)
+	}
+	if claim.Event.EventType == "logout" {
+		err = s.processLogout(ctx, effects, claim.Event)
+	} else {
+		err = s.processLogin(ctx, effects, claim.Event)
+	}
+	if err == nil {
+		err = effects.Complete(ctx)
+	}
+	if err == nil {
+		return nil
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	defer cancel()
+	_ = effects.Rollback(cleanupCtx)
+	return s.failClaimWithContext(cleanupCtx, claim, err)
+}
+
+func (s *Service) failClaim(claim domain.Claim, processingErr error) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	return s.failClaimWithContext(ctx, claim, processingErr)
+}
+
+func (s *Service) failClaimWithContext(ctx context.Context, claim domain.Claim, processingErr error) error {
+	delay := time.Duration(s.cfg.RetryBaseSec) * time.Second
+	if delay <= 0 {
+		delay = 5 * time.Second
+	}
+	for attempt := 1; attempt < claim.Event.AttemptCount && attempt < 10; attempt++ {
+		delay *= 2
+	}
+	if markErr := s.repository.MarkFailed(ctx, claim, processingErr.Error(), s.now().UTC().Add(delay), s.maxAttempts()); markErr != nil {
+		return fmt.Errorf("process Sophos auth event: %v; persist retry state: %w", processingErr, markErr)
+	}
+	return processingErr
+}
+
+func (s *Service) maxAttempts() int {
+	if s.cfg.MaxAttempts < 1 {
+		return 5
+	}
+	return s.cfg.MaxAttempts
+}
+
+func (s *Service) claimLease() time.Duration {
+	if s.cfg.ClaimLeaseSec < 1 {
+		return 30 * time.Second
+	}
+	return time.Duration(s.cfg.ClaimLeaseSec) * time.Second
+}
+
+func (s *Service) processLogin(ctx context.Context, effects domain.Effects, event domain.Event) error {
+	macs, err := effects.FindFreshMACsByIP(ctx, event.SourceIP, event.EventAt.Add(-time.Duration(s.cfg.BindingFreshnessSec)*time.Second))
 	if err != nil {
 		return err
 	}
 	correlation, mac, detail := correlate(event.SourceMAC, macs)
 	event.CorrelationStatus, event.CorrelatedMAC = correlation, mac
-	if err := s.repository.UpdateEventCorrelation(ctx, event.ID, correlation, mac, detail); err != nil {
+	if err := effects.UpdateEventCorrelation(ctx, event.ID, correlation, mac, detail); err != nil {
 		return err
 	}
-	session, err := s.repository.OpenSession(ctx, event)
+	session, err := effects.OpenSession(ctx, event)
 	if err != nil {
 		return err
 	}
@@ -98,20 +181,20 @@ func (s *Service) processLogin(ctx context.Context, event domain.Event) error {
 		appliesCurrentIdentity := !session.StartedAt.After(event.EventAt) && normalize.MACAddress(session.MACAddress) == mac
 		payload["applied_current_identity"] = appliesCurrentIdentity
 		if appliesCurrentIdentity {
-			if err := s.repository.SetDeviceIdentity(ctx, mac, event.Username, event.SourceIP, event.EventAt); err != nil {
+			if err := effects.SetDeviceIdentity(ctx, mac, event.Username, event.SourceIP, event.EventAt); err != nil {
 				return err
 			}
 		}
-		return s.record(ctx, "sophos_auth_login_correlated", "success", event.ID, mac, payload)
+		return effects.RecordAudit(ctx, "sophos_auth_login_correlated", "success", event.ID, mac, payload)
 	case "ambiguous":
-		return s.record(ctx, "sophos_auth_ambiguous", "warning", event.ID, event.SourceMAC, payload)
+		return effects.RecordAudit(ctx, "sophos_auth_ambiguous", "warning", event.ID, event.SourceMAC, payload)
 	default:
-		return s.record(ctx, "sophos_auth_uncorrelated", "warning", event.ID, event.SourceMAC, payload)
+		return effects.RecordAudit(ctx, "sophos_auth_uncorrelated", "warning", event.ID, event.SourceMAC, payload)
 	}
 }
 
-func (s *Service) processLogout(ctx context.Context, event domain.Event) error {
-	sessions, err := s.repository.CloseSessions(ctx, event.Username, event.SourceIP, event.EventAt)
+func (s *Service) processLogout(ctx context.Context, effects domain.Effects, event domain.Event) error {
+	sessions, err := effects.CloseSessions(ctx, event.Username, event.SourceIP, event.EventAt)
 	if err != nil {
 		return err
 	}
@@ -121,18 +204,18 @@ func (s *Service) processLogout(ctx context.Context, event domain.Event) error {
 			continue
 		}
 		correlation, mac = "correlated", normalize.MACAddress(session.MACAddress)
-		if err := s.repository.ClearDeviceIdentityIfMatch(ctx, mac, event.Username, event.SourceIP, event.EventAt); err != nil {
+		if err := effects.ClearDeviceIdentityIfMatch(ctx, mac, event.Username, event.SourceIP, event.EventAt); err != nil {
 			return err
 		}
 	}
-	if err := s.repository.UpdateEventCorrelation(ctx, event.ID, correlation, mac, map[string]any{"closed_session_count": len(sessions)}); err != nil {
+	if err := effects.UpdateEventCorrelation(ctx, event.ID, correlation, mac, map[string]any{"closed_session_count": len(sessions)}); err != nil {
 		return err
 	}
-	if err := s.record(ctx, "sophos_auth_logout", "success", event.ID, mac, map[string]any{"username": event.Username, "ip_address": event.SourceIP, "closed_session_count": len(sessions), "correlation_status": correlation}); err != nil {
+	if err := effects.RecordAudit(ctx, "sophos_auth_logout", "success", event.ID, mac, map[string]any{"username": event.Username, "ip_address": event.SourceIP, "closed_session_count": len(sessions), "correlation_status": correlation}); err != nil {
 		return err
 	}
 	if correlation == "uncorrelated" {
-		return s.record(ctx, "sophos_auth_uncorrelated", "warning", event.ID, "", map[string]any{"reason": "active_session_not_found", "username": event.Username, "ip_address": event.SourceIP})
+		return effects.RecordAudit(ctx, "sophos_auth_uncorrelated", "warning", event.ID, "", map[string]any{"reason": "active_session_not_found", "username": event.Username, "ip_address": event.SourceIP})
 	}
 	return nil
 }

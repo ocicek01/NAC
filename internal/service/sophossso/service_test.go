@@ -5,6 +5,8 @@ import (
 	"crypto/md5"
 	"encoding/binary"
 	"errors"
+	"sort"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 type memoryRepository struct {
 	items     map[string]domain.Item
 	retryDead bool
+	mu        sync.Mutex
 }
 
 func newMemoryRepository() *memoryRepository {
@@ -27,8 +30,16 @@ func (r *memoryRepository) Enqueue(_ context.Context, item domain.Item) (domain.
 	r.items[item.SourceKey] = item
 	return item, true, nil
 }
-func (r *memoryRepository) ClaimDue(_ context.Context, now, leaseUntil time.Time, _ int) ([]domain.Item, error) {
-	for key, item := range r.items {
+func (r *memoryRepository) ClaimNext(_ context.Context, now, leaseUntil time.Time) (domain.Item, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	keys := make([]string, 0, len(r.items))
+	for key := range r.items {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool { return itemPrecedes(r.items[keys[i]], r.items[keys[j]]) })
+	for _, key := range keys {
+		item := r.items[key]
 		if item.Status == "sent" || item.Status == "dead_letter" {
 			continue
 		}
@@ -38,15 +49,50 @@ func (r *memoryRepository) ClaimDue(_ context.Context, now, leaseUntil time.Time
 		if (item.Status == "pending" || item.Status == "retry") && item.NextAttemptAt.After(now) {
 			continue
 		}
+		blocked := false
+		for _, predecessor := range r.items {
+			if predecessor.ID != item.ID && predecessor.AcctSessionID == item.AcctSessionID && predecessor.Status != "sent" && predecessor.Status != "dead_letter" && itemPrecedes(predecessor, item) {
+				blocked = true
+				break
+			}
+		}
+		if blocked {
+			continue
+		}
 		item.AttemptCount++
 		item.Status = "processing"
 		item.LeaseUntil = &leaseUntil
 		r.items[key] = item
-		return []domain.Item{item}, nil
+		return item, true, nil
 	}
-	return []domain.Item{}, nil
+	return domain.Item{}, false, nil
+}
+
+func itemPrecedes(left, right domain.Item) bool {
+	if !left.EventTimestamp.Equal(right.EventTimestamp) {
+		return left.EventTimestamp.Before(right.EventTimestamp)
+	}
+	rank := func(status string) int {
+		switch status {
+		case "Start":
+			return 1
+		case "Interim-Update":
+			return 2
+		default:
+			return 3
+		}
+	}
+	if rank(left.AcctStatusType) != rank(right.AcctStatusType) {
+		return rank(left.AcctStatusType) < rank(right.AcctStatusType)
+	}
+	if !left.CreatedAt.Equal(right.CreatedAt) {
+		return left.CreatedAt.Before(right.CreatedAt)
+	}
+	return left.ID < right.ID
 }
 func (r *memoryRepository) MarkSent(_ context.Context, id string, leaseUntil, sentAt time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	for key, item := range r.items {
 		if item.ID == id {
 			if item.Status != "processing" || item.LeaseUntil == nil || !item.LeaseUntil.Equal(leaseUntil) {
@@ -61,6 +107,8 @@ func (r *memoryRepository) MarkSent(_ context.Context, id string, leaseUntil, se
 	return errors.New("item not found")
 }
 func (r *memoryRepository) MarkRetry(_ context.Context, id string, leaseUntil time.Time, lastError string, next time.Time, dead bool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.retryDead = dead
 	for key, item := range r.items {
 		if item.ID == id {
@@ -92,8 +140,9 @@ func (r *memoryRepository) Health(_ context.Context, enabled bool) (domain.Healt
 }
 
 type fakeUDP struct {
-	invalid  bool
-	requests [][]byte
+	invalid      bool
+	invalidCount int
+	requests     [][]byte
 }
 
 func (c *fakeUDP) Exchange(_ string, packet []byte, _ time.Duration) ([]byte, error) {
@@ -107,10 +156,23 @@ func (c *fakeUDP) Exchange(_ string, packet []byte, _ time.Duration) ([]byte, er
 	input = append(input, []byte("secret")...)
 	h := md5.Sum(input)
 	copy(response[4:20], h[:])
-	if c.invalid {
+	if c.invalid || len(c.requests) <= c.invalidCount {
 		response[4]++
 	}
 	return response, nil
+}
+
+type blockingUDP struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+	inner   fakeUDP
+}
+
+func (c *blockingUDP) Exchange(address string, packet []byte, timeout time.Duration) ([]byte, error) {
+	c.once.Do(func() { close(c.started) })
+	<-c.release
+	return c.inner.Exchange(address, packet, timeout)
 }
 
 func testConfig() config.SophosSSOConfig {
@@ -210,20 +272,115 @@ func TestProcessDueValidatesResponseAndDeadLetters(t *testing.T) {
 	}
 }
 
+func TestFailedStartBlocksStopUntilStartIsTerminal(t *testing.T) {
+	repo := newMemoryRepository()
+	cfg := testConfig()
+	cfg.MaxRetries = 2
+	service := NewService(cfg, repo, nil)
+	client := &fakeUDP{invalidCount: 2}
+	service.client = client
+	fixed := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return fixed }
+
+	start := validInput("Start", "ordered-start", "10.0.0.2")
+	stop := validInput("Stop", "ordered-stop", "10.0.0.2")
+	stop.EventTimestamp = start.EventTimestamp.Add(time.Minute)
+	if err := service.EnqueueAccounting(context.Background(), start); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.EnqueueAccounting(context.Background(), stop); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := service.ProcessDue(context.Background()); err == nil {
+		t.Fatal("failed Start did not report its send error")
+	}
+	if len(client.requests) != 1 {
+		t.Fatalf("requests=%d, Stop was sent before retrying Start", len(client.requests))
+	}
+	if repo.items["ordered-stop"].Status != "pending" {
+		t.Fatalf("Stop status=%s, want pending while Start is retryable", repo.items["ordered-stop"].Status)
+	}
+
+	repo.mu.Lock()
+	retry := repo.items["ordered-start"]
+	retry.NextAttemptAt = fixed
+	repo.items["ordered-start"] = retry
+	repo.mu.Unlock()
+	if err := service.ProcessDue(context.Background()); err == nil {
+		t.Fatal("dead-lettered Start error was not returned")
+	}
+	if repo.items["ordered-start"].Status != "dead_letter" {
+		t.Fatalf("Start status=%s, want dead_letter", repo.items["ordered-start"].Status)
+	}
+	if repo.items["ordered-stop"].Status != "sent" {
+		t.Fatalf("Stop status=%s, terminal predecessor left queue wedged", repo.items["ordered-stop"].Status)
+	}
+	if len(client.requests) != 3 {
+		t.Fatalf("requests=%d, want two Start attempts followed by Stop", len(client.requests))
+	}
+}
+
+func TestEffectivePerItemLeaseCannotBeStolenDuringBoundedSend(t *testing.T) {
+	repo := newMemoryRepository()
+	cfg := testConfig()
+	cfg.ClaimLeaseSeconds = 1
+	cfg.TimeoutSeconds = 2
+	first := NewService(cfg, repo, nil)
+	second := NewService(cfg, repo, nil)
+
+	clockMu := sync.Mutex{}
+	current := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time {
+		clockMu.Lock()
+		defer clockMu.Unlock()
+		return current
+	}
+	first.now = clock
+	second.now = clock
+	blocker := &blockingUDP{started: make(chan struct{}), release: make(chan struct{})}
+	first.client = blocker
+	secondClient := &fakeUDP{}
+	second.client = secondClient
+	if err := first.EnqueueAccounting(context.Background(), validInput("Start", "lease-start", "10.0.0.2")); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- first.ProcessDue(context.Background()) }()
+	<-blocker.started
+	clockMu.Lock()
+	current = current.Add(3 * time.Second) // Past configured lease, within enforced timeout margin.
+	clockMu.Unlock()
+	if err := second.ProcessDue(context.Background()); err != nil {
+		t.Fatalf("competing worker returned error: %v", err)
+	}
+	if len(secondClient.requests) != 0 {
+		t.Fatal("competing worker stole an in-flight per-item lease")
+	}
+	close(blocker.release)
+	if err := <-done; err != nil {
+		t.Fatalf("original worker could not finish: %v", err)
+	}
+	if repo.items["lease-start"].Status != "sent" {
+		t.Fatalf("status=%s, want sent", repo.items["lease-start"].Status)
+	}
+}
+
 func TestLeaseFencingRejectsStaleWorker(t *testing.T) {
 	repo := newMemoryRepository()
 	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
 	item := domain.Item{ID: "item-1", SourceKey: "source-1", Status: "pending", NextAttemptAt: now, CreatedAt: now}
 	_, _, _ = repo.Enqueue(context.Background(), item)
-	first, _ := repo.ClaimDue(context.Background(), now, now.Add(time.Second), 1)
-	second, _ := repo.ClaimDue(context.Background(), now.Add(2*time.Second), now.Add(3*time.Second), 1)
-	if len(first) != 1 || len(second) != 1 {
+	first, firstOK, _ := repo.ClaimNext(context.Background(), now, now.Add(time.Second))
+	second, secondOK, _ := repo.ClaimNext(context.Background(), now.Add(2*time.Second), now.Add(3*time.Second))
+	if !firstOK || !secondOK {
 		t.Fatal("item was not reclaimed after lease expiry")
 	}
-	if err := repo.MarkSent(context.Background(), item.ID, *first[0].LeaseUntil, now.Add(2*time.Second)); err == nil {
+	if err := repo.MarkSent(context.Background(), item.ID, *first.LeaseUntil, now.Add(2*time.Second)); err == nil {
 		t.Fatal("stale worker overwrote reclaimed item")
 	}
-	if err := repo.MarkSent(context.Background(), item.ID, *second[0].LeaseUntil, now.Add(3*time.Second)); err != nil {
+	if err := repo.MarkSent(context.Background(), item.ID, *second.LeaseUntil, now.Add(3*time.Second)); err != nil {
 		t.Fatalf("current lease could not complete item: %v", err)
 	}
 }

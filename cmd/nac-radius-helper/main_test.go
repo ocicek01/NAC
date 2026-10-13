@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -138,6 +139,31 @@ func TestDeploymentTemplatesSeparateMABAndUserAuthentication(t *testing.T) {
 	}
 	if strings.Contains(string(outer), "nac_ldap") {
 		t.Fatal("MAB/outer site must not invoke LDAP")
+	}
+	outerConfig := string(outer)
+	matcherLines := regexp.MustCompile(`=~ /(\^[^/]+\$)/`).FindAllStringSubmatch(outerConfig, -1)
+	var mabMatchers []*regexp.Regexp
+	for _, match := range matcherLines {
+		compiled, compileErr := regexp.Compile(match[1])
+		if compileErr != nil {
+			t.Fatalf("invalid MAB regex %q: %v", match[1], compileErr)
+		}
+		mabMatchers = append(mabMatchers, compiled)
+	}
+	for _, identity := range []string{"aa:bb:cc:dd:ee:ff", "AA-BB-CC-DD-EE-FF", "aabbccddeeff", "aabb.ccdd.eeff"} {
+		t.Run("MAB/"+identity, func(t *testing.T) {
+			for _, matcher := range mabMatchers {
+				if matcher.MatchString(identity) {
+					return
+				}
+			}
+			t.Fatalf("MAB identity %q is not recognized by the deployment template", identity)
+		})
+	}
+	for _, required := range []string{"Tmp-String-0", `User-Name := &control:Tmp-String-0`, `Calling-Station-Id := &control:Tmp-String-0`} {
+		if !strings.Contains(outerConfig, required) {
+			t.Errorf("outer site does not canonicalize MAB identity: missing %q", required)
+		}
 	}
 	if !strings.Contains(string(inner), "nac_ldap") || !strings.Contains(string(inner), "nac_user_authorize") {
 		t.Fatal("inner tunnel must authenticate with LDAP before NAC authorization")

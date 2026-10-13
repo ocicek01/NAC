@@ -84,18 +84,35 @@ func (s *Service) ProcessDue(ctx context.Context) error {
 	if !s.cfg.Enabled {
 		return nil
 	}
-	now := s.now().UTC()
-	items, err := s.repository.ClaimDue(ctx, now, now.Add(time.Duration(s.cfg.ClaimLeaseSeconds)*time.Second), s.cfg.WorkerBatchSize)
-	if err != nil {
-		return err
-	}
 	var result error
-	for _, item := range items {
+	for processed := 0; processed < s.cfg.WorkerBatchSize; processed++ {
+		now := s.now().UTC()
+		leaseUntil := now.Add(s.claimLeaseDuration())
+		item, claimed, err := s.repository.ClaimNext(ctx, now, leaseUntil)
+		if err != nil {
+			return errors.Join(result, err)
+		}
+		if !claimed {
+			break
+		}
 		if err := s.send(ctx, item); err != nil {
 			result = errors.Join(result, err)
 		}
 	}
 	return result
+}
+
+func (s *Service) claimLeaseDuration() time.Duration {
+	configured := time.Duration(s.cfg.ClaimLeaseSeconds) * time.Second
+	// A claim covers one bounded UDP exchange, not an entire batch. Keep enough
+	// margin for packet construction and the fenced database transition.
+	// Dial and the subsequent UDP exchange can each consume the configured
+	// timeout, so reserve both bounds plus database-finalization margin.
+	minimum := 2*time.Duration(s.cfg.TimeoutSeconds)*time.Second + 30*time.Second
+	if configured < minimum {
+		return minimum
+	}
+	return configured
 }
 
 func (s *Service) send(ctx context.Context, item domain.Item) error {
