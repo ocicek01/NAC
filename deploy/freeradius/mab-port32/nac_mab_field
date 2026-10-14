@@ -1,0 +1,14 @@
+exec nac_mab_field {
+	wait = yes
+	program = "/opt/nac/bin/nac-radius-helper --mode authorize --username '%{User-Name}' --mac '%{Calling-Station-Id}' --nas-ip '%{NAS-IP-Address}' --nas-identifier '%{NAS-Identifier}' --nas-port '%{NAS-Port}' --nas-port-id '%{NAS-Port-Id}' --called-station-id '%{Called-Station-Id}' --calling-station-id '%{Calling-Station-Id}'"
+	input_pairs = request
+	output_pairs = reply
+	shell_escape = yes
+}
+
+exec nac_mab_field_accounting {
+	wait = yes
+	program = "/opt/nac/bin/nac-radius-helper --mode accounting --username '%{User-Name}' --mac '%{Calling-Station-Id}' --nas-ip '%{NAS-IP-Address}' --nas-identifier '%{NAS-Identifier}' --nas-port '%{NAS-Port}' --nas-port-id '%{NAS-Port-Id}' --calling-station-id '%{Calling-Station-Id}' --acct-status-type '%{Acct-Status-Type}' --acct-session-id '%{Acct-Session-Id}' --framed-ip-address '%{Framed-IP-Address}' --session-time '%{Acct-Session-Time}' --terminate-cause '%{Acct-Terminate-Cause}' --event-timestamp '%{Tmp-String-1}' --acct-delay-time '%{Acct-Delay-Time}'"
+	input_pairs = request
+	shell_escape = yes
+}
