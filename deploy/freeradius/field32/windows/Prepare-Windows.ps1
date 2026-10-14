@@ -59,17 +59,7 @@ try {
     $exports = @(Get-ChildItem -LiteralPath $verification -Filter '*.xml')
     if ($exports.Count -ne 1) { throw 'Installed wired profile could not be read back.' }
     [xml]$installed = Get-Content -LiteralPath $exports[0].FullName -Raw
-    $ns = New-Object System.Xml.XmlNamespaceManager($installed.NameTable)
-    $ns.AddNamespace('ttls', 'http://www.microsoft.com/provisioning/EapTtlsConnectionPropertiesV1')
-    $server = $installed.SelectSingleNode('//ttls:ServerNames', $ns)
-    $hash = $installed.SelectSingleNode('//ttls:TrustedRootCAHashes', $ns)
-    $prompt = $installed.SelectSingleNode('//ttls:DisablePrompt', $ns)
-    $pap = $installed.SelectSingleNode('//ttls:PAPAuthentication', $ns)
-    if (!$server -or $server.InnerText -ne 'radius.hakkari.edu.tr' -or !$hash -or
-        ($hash.InnerText -replace '\s', '') -ne 'CABD2A79A1076A31F21D253635CB039D4329A5E8' -or
-        !$prompt -or $prompt.InnerText -ne 'true' -or !$pap) {
-        throw 'Installed profile does not match the required TTLS/PAP and server trust settings.'
-    }
+    & (Join-Path $PSScriptRoot 'Test-EapTrust.ps1') -Configuration $installed
 } finally {
     Get-ChildItem -LiteralPath $verification -File | Remove-Item
     Remove-Item -LiteralPath $verification

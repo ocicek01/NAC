@@ -19,7 +19,7 @@
               <EapTtls xmlns="http://www.microsoft.com/provisioning/EapTtlsConnectionPropertiesV1">
                 <ServerValidation>
                   <ServerNames>radius.hakkari.edu.tr</ServerNames>
-                  <TrustedRootCAHashes>CABD2A79A1076A31F21D253635CB039D4329A5E8</TrustedRootCAHashes>
+                  <TrustedRootCAHash>CA BD 2A 79 A1 07 6A 31 F2 1D 25 36 35 CB 03 9D 43 29 A5 E8</TrustedRootCAHash>
                   <DisablePrompt>true</DisablePrompt>
                 </ServerValidation>
                 <Phase2Authentication><PAPAuthentication /></Phase2Authentication>

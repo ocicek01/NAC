@@ -13,6 +13,8 @@ namespace NacField32 {
   public struct Method { public byte Type; public uint Vendor; public uint VendorType; public uint Author; }
   [DllImport("Eappcfg.dll")]
   public static extern uint EapHostPeerConfigXml2Blob(uint flags, IntPtr doc, out uint size, out IntPtr blob, out Method method, out IntPtr error);
+  [DllImport("Eappcfg.dll")]
+  public static extern uint EapHostPeerConfigBlob2Xml(uint flags, Method method, uint size, IntPtr blob, [MarshalAs(UnmanagedType.Interface)] out object doc, out IntPtr error);
   [DllImport("Eappcfg.dll")] public static extern void EapHostPeerFreeMemory(IntPtr p);
   [DllImport("Eappcfg.dll")] public static extern void EapHostPeerFreeErrorMemory(IntPtr p);
  }
@@ -28,6 +30,8 @@ $unknown = [Runtime.InteropServices.Marshal]::GetIUnknownForObject($doc.document
 $node = [IntPtr]::Zero
 $blob = [IntPtr]::Zero
 $errorPtr = [IntPtr]::Zero
+$roundtripError = [IntPtr]::Zero
+$roundtrip = $null
 try {
     $iid = [Guid]'2933BF80-7B36-11d2-B20E-00C04F983E60'
     $hr = [Runtime.InteropServices.Marshal]::QueryInterface($unknown, [ref]$iid, [ref]$node)
@@ -37,8 +41,13 @@ try {
     $result = [NacField32.EapConfig]::EapHostPeerConfigXml2Blob(0, $node, [ref]$size, [ref]$blob, [ref]$method, [ref]$errorPtr)
     if ($result -ne 0) { throw "Windows rejected EAP configuration: error $result. No profile was installed." }
     if ($method.Type -ne 21 -or $size -eq 0) { throw 'Expected a non-empty EAP-TTLS configuration.' }
-    Write-Output 'Windows EAP-TTLS configuration validation: PASS'
+    $result = [NacField32.EapConfig]::EapHostPeerConfigBlob2Xml(0, $method, $size, $blob, [ref]$roundtrip, [ref]$roundtripError)
+    if ($result -ne 0) { throw "Windows EAP configuration readback failed: $result" }
+    & (Join-Path $PSScriptRoot 'Test-EapTrust.ps1') -Configuration ([xml]$roundtrip.xml)
+    Write-Output 'Windows EAP-TTLS configuration and root CA readback: PASS'
 } finally {
+    if ($roundtrip) { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($roundtrip) }
+    if ($roundtripError -ne [IntPtr]::Zero) { [NacField32.EapConfig]::EapHostPeerFreeErrorMemory($roundtripError) }
     if ($blob -ne [IntPtr]::Zero) { [NacField32.EapConfig]::EapHostPeerFreeMemory($blob) }
     if ($errorPtr -ne [IntPtr]::Zero) { [NacField32.EapConfig]::EapHostPeerFreeErrorMemory($errorPtr) }
     if ($node -ne [IntPtr]::Zero) { [void][Runtime.InteropServices.Marshal]::Release($node) }
