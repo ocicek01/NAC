@@ -2,6 +2,8 @@
 
 These files target FreeRADIUS 3.x on Debian/Ubuntu. They are templates: replace
 every `@@NAME@@` value before enabling them. Never commit rendered secrets.
+`nac_ldap` is rendered separately by `install-nac-ldap-starttls.sh` using the
+LDAP variables in `/opt/nac/.env`; it requires a verified CA and StartTLS.
 
 Install locations:
 

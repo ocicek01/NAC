@@ -1,9 +1,9 @@
 ldap nac_ldap {
-	server = "ldaps://@@LDAP_SERVER_FQDN@@"
-	port = 636
-	identity = "@@LDAP_BIND_DN@@"
-	password = "@@LDAP_BIND_PASSWORD@@"
-	base_dn = "@@LDAP_PEOPLE_BASE_DN@@"
+	server = "ldap://${LDAP_HOST}"
+	port = 389
+	identity = "${LDAP_BIND_DN}"
+	password = "${LDAP_BIND_PASSWORD}"
+	base_dn = "${LDAP_BASE_DN}"
 
 	user {
 		base_dn = "${..base_dn}"
@@ -11,8 +11,8 @@ ldap nac_ldap {
 	}
 
 	tls {
-		start_tls = no
-		ca_file = "@@LDAP_CA_FILE@@"
+		start_tls = yes
+		ca_file = "${LDAP_CA_FILE}"
 		require_cert = "demand"
 	}
 
