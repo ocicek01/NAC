@@ -5,8 +5,12 @@ every `@@NAME@@` value before enabling them. Never commit rendered secrets.
 `nac_ldap` is rendered separately by `install-nac-ldap-starttls.sh` using the
 LDAP variables in `/opt/nac/.env`; it requires a verified CA and StartTLS.
 `sites-available/nac-ldap-test` is an optional loopback-only PAP test server on
-port 18121 (18120 is used by the default inner tunnel). It does not replace the live site, has no MAB or EAP path, and
-rejects requests without a password. Enable it only for isolated LDAP tests.
+port 18121 (18120 is used by the default inner tunnel). It does not replace the
+live site, has no MAB or EAP path, and rejects requests without a password.
+Enable it only for isolated LDAP tests. `test-nac-ldap-credentials.sh` takes a
+test username and a root-owned mode-0600 password file; it checks correct,
+wrong, missing, and nonexistent-user responses, then disables the test site.
+Do not pass the test password on the command line or commit it.
 
 Install locations:
 
