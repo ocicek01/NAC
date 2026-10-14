@@ -38,3 +38,9 @@ journalctl -u freeradius -n 100 --no-pager
 `nac-inner-tunnel` implements managed-user authentication using EAP-TTLS/PAP.
 `nac_mab_authorize` is a separate authorization-only path and never calls LDAP.
 Accounting is sent to NAC after local RADIUS accounting modules run.
+
+For the NAC API's LDAP user and device lookups, set `LDAP_HOST` to an
+`ldap://host:389` address for mandatory StartTLS or `ldaps://host:636` for
+direct TLS. Set `LDAP_CA_FILE` to the trusted PEM CA certificate. The host must
+match the server certificate's DNS or IP subject alternative name. LDAP binds
+fail closed when TLS negotiation or certificate verification fails.

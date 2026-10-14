@@ -2,9 +2,7 @@ package identitysource
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
-	"net"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,6 +45,7 @@ type ldapDeviceCacheEntry struct {
 
 type LDAPDeviceResolver struct {
 	host         string
+	caFile       string
 	bindDN       string
 	bindPassword string
 	baseDN       string
@@ -76,6 +75,7 @@ func NewLDAPDeviceResolver(cfg config.IdentityConfig) *LDAPDeviceResolver {
 
 	return &LDAPDeviceResolver{
 		host:         strings.TrimSpace(cfg.LDAPHost),
+		caFile:       strings.TrimSpace(cfg.LDAPCAFile),
 		bindDN:       strings.TrimSpace(cfg.LDAPBindDN),
 		bindPassword: cfg.LDAPBindPassword,
 		baseDN:       baseDN,
@@ -102,7 +102,7 @@ func (r *LDAPDeviceResolver) LookupByMAC(ctx context.Context, macAddress string)
 		return record, nil
 	}
 
-	conn, err := ldap.DialURL(r.dialURL(), ldap.DialWithTLSConfig(&tls.Config{InsecureSkipVerify: true}), ldap.DialWithDialer(&net.Dialer{Timeout: r.timeout}))
+	conn, err := dialLDAP(r.host, r.caFile, r.timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -189,14 +189,6 @@ func (r *LDAPDeviceResolver) LookupByMAC(ctx context.Context, macAddress string)
 	}
 	r.setCached(normalizedMAC, record)
 	return cloneLDAPDeviceRecord(record), nil
-}
-
-func (r *LDAPDeviceResolver) dialURL() string {
-	host := strings.TrimSpace(r.host)
-	if strings.HasPrefix(host, "ldap://") || strings.HasPrefix(host, "ldaps://") {
-		return host
-	}
-	return "ldap://" + host
 }
 
 func parseLDAPInt(value string) int {

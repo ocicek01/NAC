@@ -2,9 +2,7 @@ package identitysource
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
-	"net"
 	"strings"
 	"time"
 
@@ -15,6 +13,7 @@ import (
 
 type LDAPResolver struct {
 	host           string
+	caFile         string
 	bindDN         string
 	bindPassword   string
 	baseDN         string
@@ -39,6 +38,7 @@ func NewLDAPResolver(cfg config.IdentityConfig) *LDAPResolver {
 	}
 	return &LDAPResolver{
 		host:           strings.TrimSpace(cfg.LDAPHost),
+		caFile:         strings.TrimSpace(cfg.LDAPCAFile),
 		bindDN:         strings.TrimSpace(cfg.LDAPBindDN),
 		bindPassword:   cfg.LDAPBindPassword,
 		baseDN:         strings.TrimSpace(cfg.LDAPBaseDN),
@@ -60,7 +60,7 @@ func (r *LDAPResolver) Resolve(ctx context.Context, identifier, password string)
 		return nil, nil
 	}
 
-	conn, err := ldap.DialURL(r.dialURL(), ldap.DialWithTLSConfig(&tls.Config{InsecureSkipVerify: true}), ldap.DialWithDialer(&net.Dialer{Timeout: r.timeout}))
+	conn, err := dialLDAP(r.host, r.caFile, r.timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +102,7 @@ func (r *LDAPResolver) Resolve(ctx context.Context, identifier, password string)
 		return nil, nil
 	}
 
-	userConn, err := ldap.DialURL(r.dialURL(), ldap.DialWithTLSConfig(&tls.Config{InsecureSkipVerify: true}), ldap.DialWithDialer(&net.Dialer{Timeout: r.timeout}))
+	userConn, err := dialLDAP(r.host, r.caFile, r.timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -147,14 +147,6 @@ func (r *LDAPResolver) mapGID(gid string) (string, int) {
 	default:
 		return "", 0
 	}
-}
-
-func (r *LDAPResolver) dialURL() string {
-	host := strings.TrimSpace(r.host)
-	if strings.HasPrefix(host, "ldap://") || strings.HasPrefix(host, "ldaps://") {
-		return host
-	}
-	return "ldap://" + host
 }
 
 func (r *LDAPResolver) allowedByWhitelist(uid, mail string) bool {
