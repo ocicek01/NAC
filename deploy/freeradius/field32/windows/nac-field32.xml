@@ -16,10 +16,10 @@
               <AuthorId xmlns="http://www.microsoft.com/provisioning/EapCommon">311</AuthorId>
             </EapMethod>
             <Config>
-              <eapTtls xmlns="http://www.microsoft.com/provisioning/EapTtlsConnectionPropertiesV1">
+              <EapTtls xmlns="http://www.microsoft.com/provisioning/EapTtlsConnectionPropertiesV1">
                 <ServerValidation>
                   <ServerNames>radius.hakkari.edu.tr</ServerNames>
-                  <TrustedRootCAHash>CABD2A79A1076A31F21D253635CB039D4329A5E8</TrustedRootCAHash>
+                  <TrustedRootCAHashes>CABD2A79A1076A31F21D253635CB039D4329A5E8</TrustedRootCAHashes>
                   <DisablePrompt>true</DisablePrompt>
                 </ServerValidation>
                 <Phase2Authentication><PAPAuthentication /></Phase2Authentication>
@@ -27,7 +27,7 @@
                   <IdentityPrivacy>true</IdentityPrivacy>
                   <AnonymousIdentity>anonymous@hakkari.edu.tr</AnonymousIdentity>
                 </Phase1Identity>
-              </eapTtls>
+              </EapTtls>
             </Config>
           </EapHostConfig>
         </EAPConfig>
