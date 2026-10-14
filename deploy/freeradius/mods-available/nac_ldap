@@ -12,7 +12,7 @@ ldap nac_ldap {
 
 	tls {
 		start_tls = yes
-		ca_file = "${LDAP_CA_FILE}"
+		ca_file = "${LDAP_RADIUS_CA_FILE}"
 		require_cert = "demand"
 	}
 

@@ -27,6 +27,9 @@ for value in "$LDAP_BIND_DN" "$LDAP_BIND_PASSWORD" "$LDAP_BASE_DN" "$LDAP_CA_FIL
   fi
 done
 test -r "$LDAP_CA_FILE"
+export LDAP_RADIUS_CA_FILE=/etc/freeradius/3.0/certs/nac/nac-root-ca.crt
+test -r "$LDAP_RADIUS_CA_FILE"
+cmp -s "$LDAP_CA_FILE" "$LDAP_RADIUS_CA_FILE"
 
 target=/etc/freeradius/3.0/mods-available/nac_ldap
 enabled=/etc/freeradius/3.0/mods-enabled/nac_ldap
@@ -34,7 +37,7 @@ template=/opt/nac/deploy/freeradius/mods-available/nac_ldap
 tmp=$(mktemp /etc/freeradius/3.0/mods-available/.nac_ldap.XXXXXX)
 trap 'rm -f "$tmp"' EXIT
 
-envsubst '${LDAP_HOST} ${LDAP_BIND_DN} ${LDAP_BIND_PASSWORD} ${LDAP_BASE_DN} ${LDAP_CA_FILE}' < "$template" > "$tmp"
+envsubst '${LDAP_HOST} ${LDAP_BIND_DN} ${LDAP_BIND_PASSWORD} ${LDAP_BASE_DN} ${LDAP_RADIUS_CA_FILE}' < "$template" > "$tmp"
 if grep -q '\${LDAP_' "$tmp"; then
   echo "unrendered LDAP template placeholder" >&2
   exit 1
