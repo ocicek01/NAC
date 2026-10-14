@@ -1,0 +1,27 @@
+server nac-ldap-test {
+	listen {
+		type = auth
+		ipaddr = 127.0.0.1
+		port = 18121
+	}
+
+	authorize {
+		filter_username
+		if (!&User-Password) {
+			reject
+		}
+		nac_ldap
+		if (!(ok || updated)) {
+			reject
+		}
+		update control {
+			Auth-Type := LDAP
+		}
+	}
+
+	authenticate {
+		Auth-Type LDAP {
+			nac_ldap
+		}
+	}
+}
