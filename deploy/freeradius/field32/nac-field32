@@ -1,0 +1,56 @@
+server nac-field32 {
+	authorize {
+		if (!&NAS-Port || &NAS-Port != 32 || !&EAP-Message) {
+			reject
+		}
+		nac_field_eap
+	}
+	authenticate {
+		nac_field_eap
+	}
+	accounting {
+		detail
+	}
+}
+
+server nac-field32-preflight {
+	listen {
+		type = auth
+		ipaddr = 127.0.0.1
+		port = 18123
+	}
+	authorize {
+		if (!&EAP-Message) {
+			reject
+		}
+		nac_field_eap
+	}
+	authenticate {
+		nac_field_eap
+	}
+}
+
+server nac-field32-inner {
+	authorize {
+		if (!&User-Password) {
+			reject
+		}
+		nac_field_ldap
+		if (!(ok || updated)) {
+			reject
+		}
+		update control {
+			Auth-Type := LDAP
+		}
+	}
+	authenticate {
+		Auth-Type LDAP {
+			nac_field_ldap
+		}
+	}
+	post-auth {
+		update reply {
+			User-Name := &request:User-Name
+		}
+	}
+}

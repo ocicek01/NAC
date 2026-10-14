@@ -1,0 +1,19 @@
+eap nac_field_eap {
+	default_eap_type = ttls
+	timer_expire = 60
+	ignore_unknown_eap_types = no
+	tls-config tls-field32 {
+		private_key_file = /etc/freeradius/3.0/certs/letsencrypt/privkey.pem
+		certificate_file = /etc/freeradius/3.0/certs/letsencrypt/fullchain.pem
+		ca_file = /etc/freeradius/3.0/certs/nac/nac-root-ca.crt
+		tls_min_version = "1.2"
+		cipher_list = "HIGH"
+	}
+	ttls {
+		tls = tls-field32
+		copy_request_to_tunnel = yes
+		use_tunneled_reply = yes
+		virtual_server = nac-field32-inner
+		require_client_cert = no
+	}
+}
