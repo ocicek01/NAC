@@ -1,6 +1,10 @@
 #Requires -RunAsAdministrator
 [CmdletBinding()]
-param([switch]$Rollback)
+param(
+    [switch]$Rollback,
+    [ValidatePattern('^(?:[0-9A-Fa-f]{12}|(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2})$')]
+    [string]$ExpectedMac = '30:9C:23:9B:97:AA'
+)
 
 $ErrorActionPreference = 'Stop'
 function Invoke-NetshChecked {
@@ -13,11 +17,14 @@ function Invoke-NetshChecked {
         throw 'netsh failed. The wired profile operation was not confirmed.'
     }
 }
-$expectedMac = '309C239B97AA'
+$expectedMac = ($ExpectedMac -replace '[:-]', '').ToUpperInvariant()
 $adapter = @(Get-NetAdapter | Where-Object { ($_.MacAddress -replace '[:-]', '') -eq $expectedMac })
-if ($adapter.Count -ne 1) { throw 'Expected test NIC 30:9C:23:9B:97:AA was not found.' }
+if ($adapter.Count -ne 1) { throw "Expected test NIC $ExpectedMac was not found uniquely." }
 $interface = $adapter[0].Name
 $backup = Join-Path $env:ProgramData 'NAC-Field32-Backup'
+if ($expectedMac -ne '309C239B97AA') {
+    $backup = Join-Path $env:ProgramData "NAC-Field32-Backup-$expectedMac"
+}
 $stateFile = Join-Path $backup 'state.json'
 
 if ($Rollback) {
